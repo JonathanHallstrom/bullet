@@ -61,3 +61,39 @@ path = "../../examples/progression/3_input_buckets.rs"
 [[example]]
 name = "4_multi_layer"
 path = "../../examples/progression/4_multi_layer.rs"
+
+[[example]]
+name = "mirrored"
+path = "../../examples/mirrored.rs"
+
+[[example]]
+name = "input_bucketed"
+path = "../../examples/input_bucketed.rs"
+
+[[example]]
+name = "prelude"
+path = "../../examples/prelude.rs"
+
+[[example]]
+name = "turbulence"
+path = "../../examples/turbulence.rs"
+
+[[example]]
+name = "stockdory"
+path = "../../examples/sd.rs"
+
+[[example]]
+name = "vine"
+path = "../../examples/vine.rs"
+
+[[example]]
+name = "vine2"
+path = "../../examples/vine2.rs"
+
+[[example]]
+name = "input_bucketed_staged"
+path = "../../examples/input_bucketed_staged.rs"
+
+[[example]]
+name = "512_testnet"
+path = "../../examples/512_testnet.rs"
