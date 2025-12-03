@@ -102,7 +102,7 @@ fn piece_count_acceptance(board: &Board) -> f64 {
 }
 fn filter(board: &Board, mv: Move, eval: i16, wdl: f32) -> bool {
     let default_viri_filter = Filter {
-        min_ply: 24,
+        min_ply: 16,
         min_pieces: 4,
         filter_tactical: true,
         filter_check: true,
@@ -110,9 +110,9 @@ fn filter(board: &Board, mv: Move, eval: i16, wdl: f32) -> bool {
         max_eval: 10000,
         max_eval_incorrectness: 2500,
         random_fen_skipping: true,
-        random_fen_skip_probability: 0.5,
+        random_fen_skip_probability: 0.15,
 
-        wdl_filtered: true,
+        wdl_filtered: false,
         wdl_model_params_a: [-51.91819866, 145.18809272, -166.61481017, 281.59570002],
         wdl_model_params_b: [-24.71724508, 82.92975519, -33.49186286, 52.86407201],
         ..Default::default()
@@ -136,8 +136,8 @@ fn main() {
         .output_buckets(MaterialCount::<NUM_OUTPUT_BUCKETS>)
         .save_format(&[
             SavedFormat::id("l0w")
-                .add_transform(|builder, _, mut weights| {
-                    let factoriser = builder.get_weights("l0f").get_dense_vals().unwrap();
+                .transform(|builder, mut weights| {
+                    let factoriser = builder.get("l0f").values;
                     let expanded = factoriser.repeat(NUM_INPUT_BUCKETS);
 
                     for (i, &j) in weights.iter_mut().zip(expanded.iter()) {
@@ -181,7 +181,7 @@ fn main() {
         steps: TrainingSteps {
             batch_size: 16_384,
             batches_per_superbatch: 6104,
-            start_superbatch: 401,
+            start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE1,
         },
         wdl_scheduler: wdl::LinearWDL { start: 0.3, end: 0.7 },

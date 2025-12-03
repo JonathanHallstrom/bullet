@@ -1,10 +1,7 @@
 use std::u32;
 
 use bullet_lib::{
-    game::{
-        inputs::{self},
-        outputs::MaterialCount,
-    },
+    game::inputs::{self},
     nn::optimiser,
     trainer::{
         save::SavedFormat,
@@ -14,10 +11,7 @@ use bullet_lib::{
     value::{ValueTrainerBuilder, loader},
 };
 use bulletformat::ChessBoard;
-use montyformat::chess::{
-    Attacks, Piece, Side,
-    consts::{IN_BETWEEN, LINE_THROUGH},
-};
+use montyformat::chess::{Attacks, Piece, Side, consts::IN_BETWEEN};
 use viriformat::dataformat::Filter;
 
 #[derive(Clone, Copy, Default)]
@@ -227,7 +221,7 @@ fn main() {
         });
 
     let schedule = TrainingSchedule {
-        net_id: "vine_51_test1".to_string(),
+        net_id: "vine_55_test1".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
             batch_size: 16_384,
@@ -251,7 +245,7 @@ fn main() {
         LocalSettings { threads: 8, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
     let data_loader = loader::ViriBinpackLoader::new(
-        "./vine_dataset28__32.vf",
+        "",
         16384,
         16,
         Filter {
@@ -274,11 +268,7 @@ fn main() {
         },
     );
 
-    // trainer.optimiser.set_params(Default::default());
-    // trainer.optimiser.load_weights_from_file("checkpoints/vine_50_test1-2000/optimiser_state/weights.bin");
-    // trainer.load_from_checkpoint("checkpoints/vine_50_test1-2000");
     trainer.run(&schedule, &settings, &data_loader);
-    // trainer.save_to_checkpoint("vine_50_test1-2000-tmp/");
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
