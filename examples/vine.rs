@@ -29,7 +29,7 @@ impl inputs::SparseInputType for ThreatInputs {
     type RequiredDataType = ChessBoard;
 
     fn num_inputs(&self) -> usize {
-        return 3072;
+        return 4608;
     }
 
     fn max_active(&self) -> usize {
@@ -73,7 +73,7 @@ impl inputs::SparseInputType for ThreatInputs {
     }
 
     fn shorthand(&self) -> String {
-        return "3072".to_owned();
+        return "4608".to_owned();
     }
 
     fn description(&self) -> String {
@@ -162,11 +162,17 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
                 let bit = 1 << sq;
                 if threats[side ^ 1] & bit > 0 {
                     feat += 768;
+
+                    if pinned[side] & bit > 0 {
+                        feat += 768;
+                    }
                 }
 
                 if threats[side] & bit > 0 {
-                    feat += 768 * 2;
+                    feat += 768 * 3;
                 }
+
+                println!("{feat}");
 
                 f(feat);
             });
@@ -209,7 +215,7 @@ fn main() {
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
         .build(|builder, stm_inputs| {
             // weights
-            let l0 = builder.new_affine("l0", 3072, L1);
+            let l0 = builder.new_affine("l0", 4608, L1);
             let l1 = builder.new_affine("l1", L1 / 2, L2);
             let l2 = builder.new_affine("l2", L2, L3);
             let l3 = builder.new_affine("l3", L3, 1);
@@ -221,7 +227,7 @@ fn main() {
         });
 
     let schedule = TrainingSchedule {
-        net_id: "vine_55_test1".to_string(),
+        net_id: "vine_55_test3".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
             batch_size: 16_384,
@@ -245,7 +251,7 @@ fn main() {
         LocalSettings { threads: 8, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
     let data_loader = loader::ViriBinpackLoader::new(
-        "",
+        "/media/jonathanhallstrom/64a18cc9-6680-4f1b-a09f-56b812251151/vine_data/dataset_36/vine_dataset34_36_scaled.vf_relabeled",
         16384,
         16,
         Filter {
@@ -268,6 +274,7 @@ fn main() {
         },
     );
 
+    // trainer.load_from_checkpoint("checkpoints/vine_55_test3-2000");
     trainer.run(&schedule, &settings, &data_loader);
 
     for fen in [
@@ -283,6 +290,10 @@ fn main() {
         "rn1qkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "r1bqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "1nbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQka - 0 1",
+        "3k4/8/8/8/8/8/8/3K4 w - - 0 1",
+        "3k4/3r4/8/8/8/8/3P4/3K4 w - - 0 1",
+        "4k3/3ppp2/8/1B2R2B/1b2r2b/8/3PPP2/4K3 w - - 0 1",
+        "4k3/3ppp2/8/1B2R2B/1B2R2B/8/3PPP2/4K3 w - - 0 1",
     ] {
         let eval = trainer.eval(fen);
         println!("FEN: {fen}");
