@@ -97,3 +97,7 @@ path = "../../examples/input_bucketed_staged.rs"
 [[example]]
 name = "512_testnet"
 path = "../../examples/512_testnet.rs"
+
+[[example]]
+name = "relabel"
+path = "../../examples/extra/relabel.rs"
