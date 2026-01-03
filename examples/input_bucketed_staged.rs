@@ -179,12 +179,12 @@ fn main() {
         net_id: NET_NAME.to_string() + "_stage1",
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
-            batch_size: 16_384,
-            batches_per_superbatch: 6104,
+            batch_size: 16_384 * 4,
+            batches_per_superbatch: 6104 / 4,
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE1,
         },
-        wdl_scheduler: wdl::LinearWDL { start: 0.3, end: 0.7 },
+        wdl_scheduler: wdl::LinearWDL { start: 0.25, end: 0.75 },
         lr_scheduler: lr::Warmup {
             inner: lr::LinearDecayLR {
                 initial_lr: 0.001,
@@ -193,14 +193,14 @@ fn main() {
             },
             warmup_batches: 200,
         },
-        save_rate: 10,
+        save_rate: 100,
     };
     let stage2_schedule = TrainingSchedule {
         net_id: NET_NAME.to_string() + "_stage2",
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
-            batch_size: 16_384,
-            batches_per_superbatch: 6104,
+            batch_size: 16_384 * 4,
+            batches_per_superbatch: 6104 / 4,
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE2,
         },
@@ -213,12 +213,15 @@ fn main() {
             },
             warmup_batches: 200,
         },
-        save_rate: 10,
+        save_rate: 100,
     };
 
-    let settings = LocalSettings { threads: 8, test_set: None, output_directory: "checkpoints", batch_queue_size: 64 };
+    let settings =
+        LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
-    let binpack_dataset = "/media/jonathanhallstrom/64a18cc9-6680-4f1b-a09f-56b812251151/pawnocchio_data_backup/regen_0821_5-12ksn_dataset.vf";
+    let binpack_dataset = "/home/jonathanhallstrom/dev/rust/bullet/vine_37/mixed_data.vf";
+    // let pawnocchio_binpack_dataset = "/media/jonathanhallstrom/64a18cc9-6680-4f1b-a09f-56b812251151/pawnocchio_data_backup/regen_0821_5-12ksn_dataset.vf";
+    // let pawnocchio_binpack_dataset = "/media/jonathanhallstrom/64a18cc9-6680-4f1b-a09f-56b812251151/pawnocchio_data_backup/regen_0821_5-12ksn_dataset.vf_relabeled";
 
     // trainer.run(
     //     &stage0_schedule,
@@ -230,12 +233,13 @@ fn main() {
     trainer.run(
         &stage1_schedule,
         &settings,
-        &ViriBinpackLoader::new(binpack_dataset, 32768, 16, ViriFilter::Custom(filter)),
+        &ViriBinpackLoader::new(binpack_dataset, 16384, 16, ViriFilter::Custom(filter)),
     );
+    // trainer.load_from_checkpoint("checkpoints/input_bucketed_1536_16_stage2-200");
     trainer.run(
         &stage2_schedule,
         &settings,
-        &ViriBinpackLoader::new(binpack_dataset, 32768, 16, ViriFilter::Custom(filter)),
+        &ViriBinpackLoader::new(binpack_dataset, 16384, 16, ViriFilter::Custom(filter)),
     );
 
     for fen in [

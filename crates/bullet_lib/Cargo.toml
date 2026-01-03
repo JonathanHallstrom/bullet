@@ -25,6 +25,11 @@ bulletformat = { workspace = true }
 montyformat = { workspace = true }
 sfbinpack = "0.6.0"
 viriformat = { workspace = true }
+rand = "0.9"
+bytemuck = { version = "1.24.0", default-features = false, features = [
+    "extern_crate_std",
+    "latest_stable_rust",
+]}
 
 [[example]]
 name = "simple"
@@ -101,3 +106,11 @@ path = "../../examples/512_testnet.rs"
 [[example]]
 name = "relabel"
 path = "../../examples/extra/relabel.rs"
+
+[[example]]
+name = "kirill"
+path = "../../examples/kirill.rs"
+
+[[example]]
+name = "aether"
+path = "../../examples/aether.rs"
