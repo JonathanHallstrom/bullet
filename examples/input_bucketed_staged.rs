@@ -25,11 +25,11 @@ use viriformat::{
 
 type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
-const NET_NAME: &'static str = "input_bucketed_1536_16";
+const NET_NAME: &'static str = "input_bucketed_2048_16";
 
 const SUPERBATCHES_STAGE1: usize = 800;
 const SUPERBATCHES_STAGE2: usize = 200;
-const HIDDEN_SIZE: usize = 1536;
+const HIDDEN_SIZE: usize = 2048;
 const SCALE: i32 = 400;
 const QA: i16 = 255;
 const QB: i16 = 64;
@@ -163,11 +163,11 @@ fn main() {
             l0.weights = l0.weights + expanded_factoriser;
 
             // output layer weights
-            let l1 = builder.new_affine("l1", 2 * HIDDEN_SIZE, NUM_OUTPUT_BUCKETS);
+            let l1 = builder.new_affine("l1", HIDDEN_SIZE, NUM_OUTPUT_BUCKETS);
 
             // inference
-            let stm_hidden = l0.forward(stm_inputs).screlu();
-            let ntm_hidden = l0.forward(ntm_inputs).screlu();
+            let stm_hidden = l0.forward(stm_inputs).crelu().pairwise_mul();
+            let ntm_hidden = l0.forward(ntm_inputs).crelu().pairwise_mul();
             let hidden_layer = stm_hidden.concat(ntm_hidden);
             l1.forward(hidden_layer).select(output_buckets)
         });
@@ -233,13 +233,13 @@ fn main() {
     trainer.run(
         &stage1_schedule,
         &settings,
-        &ViriBinpackLoader::new(binpack_dataset, 16384, 16, ViriFilter::Custom(filter)),
+        &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
     );
     // trainer.load_from_checkpoint("checkpoints/input_bucketed_1536_16_stage2-200");
     trainer.run(
         &stage2_schedule,
         &settings,
-        &ViriBinpackLoader::new(binpack_dataset, 16384, 16, ViriFilter::Custom(filter)),
+        &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
     );
 
     for fen in [
