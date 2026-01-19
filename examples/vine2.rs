@@ -1,8 +1,8 @@
-sse std::u32;
+use std::u32;
 
 use bullet_lib::{
     game::inputs::{self},
-    nn::{Shape, optimiser},
+    nn::optimiser,
     trainer::{
         save::SavedFormat,
         schedule::{TrainingSchedule, TrainingSteps, lr, wdl},
@@ -11,8 +11,14 @@ use bullet_lib::{
     value::{ValueTrainerBuilder, loader},
 };
 use bulletformat::ChessBoard;
-use montyformat::chess::{Attacks, Piece, Side, consts::IN_BETWEEN};
+use montyformat::chess::{Attacks, Piece, Side};
 use viriformat::dataformat::Filter;
+
+const SUPERBATCHES: usize = 800;
+const HIDDEN_SIZE: usize = 1024;
+const SCALE: i32 = 400;
+const QA: i16 = 255;
+const QB: i16 = 64;
 
 #[derive(Clone, Copy, Default)]
 pub struct ThreatInputs;
@@ -111,31 +117,10 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
 
     let mut threats: [u64; 2] = [0; 2];
 
-    let mut pinned: [u64; 2] = [0; 2];
-
     for side in [Side::WHITE, Side::BLACK] {
-        let us = bbs[side];
-        let our_king_idx = (bbs[Piece::KING] & us).trailing_zeros() as usize;
-        let bishops = bbs[Piece::BISHOP];
-        let rooks = bbs[Piece::ROOK];
-        let queens = bbs[Piece::QUEEN];
-
-        let possible_pinners_rook = Attacks::xray_rook(our_king_idx, occ, us) & (rooks | queens) & !us;
-        let possible_pinners_bishop = Attacks::xray_bishop(our_king_idx, occ, us) & (bishops | queens) & !us;
-
-        map_bb(possible_pinners_bishop | possible_pinners_rook, |pinner| {
-            let between = IN_BETWEEN[our_king_idx][pinner];
-            if (between & us).count_ones() == 1 {
-                pinned[side] |= between;
-            }
-        });
-    }
-
-    for side in [Side::WHITE, Side::BLACK] {
-        let our_king_idx = (bbs[Piece::KING] & bbs[side]).trailing_zeros() as usize;
         for piece in Piece::PAWN..=Piece::KING {
             map_bb(bbs[side] & bbs[piece], |sq| {
-                let mut cur_threats = match piece {
+                threats[side] |= match piece {
                     Piece::PAWN => Attacks::pawn(sq, side),
                     Piece::KNIGHT => Attacks::knight(sq),
                     Piece::BISHOP => Attacks::bishop(sq, occ),
@@ -144,12 +129,6 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
                     Piece::KING => Attacks::king(sq),
                     _ => unreachable!(),
                 } & occ;
-
-                if pinned[side] & 1 << sq != 0 {
-                    cur_threats &= IN_BETWEEN[our_king_idx][sq];
-                }
-
-                threats[side] |= cur_threats;
             });
         }
     }
@@ -174,14 +153,6 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
     }
 }
 
-const SUPERBATCHES: usize = 3000;
-const L1: usize = 3072;
-const L2: usize = 16;
-const L3: usize = 128;
-const SCALE: i32 = 400;
-const QA: i16 = 255;
-const QB: i16 = 64;
-
 fn main() {
     let mut trainer = ValueTrainerBuilder::default()
         // makes `ntm_inputs` not available below
@@ -195,58 +166,46 @@ fn main() {
         .save_format(&[
             SavedFormat::id("l0w").round().quantise::<i16>(QA),
             SavedFormat::id("l0b").round().quantise::<i16>(QA),
-            SavedFormat::id("l1w").round().quantise::<i8>(QB),
-            SavedFormat::id("l1b"),
-            SavedFormat::id("l2w"),
-            SavedFormat::id("l2b"),
-            SavedFormat::id("l3w"),
-            SavedFormat::id("l3b"),
+            SavedFormat::id("l1w").round().quantise::<i16>(QB).transpose(),
+            SavedFormat::id("l1b").round().quantise::<i16>(QA * QB),
         ])
-<<<<<<< HEAD
+        // map output into ranges [0, 1] to fit against our labels which
+        // are in the same range
+        // `target` == wdl * game_result + (1 - wdl) * sigmoid(search score in centipawns / SCALE)
+        // where `wdl` is determined by `wdl_scheduler`
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
         .build(|builder, stm_inputs| {
-=======
-        .wdl_output()
-        .build_custom(|builder, stm_inputs, targets| {
->>>>>>> 50373d9 (wdl outputs training)
             // weights
-            let l0 = builder.new_affine("l0", 3072, L1);
-            let l1 = builder.new_affine("l1", L1 / 2, L2);
-            let l2 = builder.new_affine("l2", L2, L3);
-            let l3 = builder.new_affine("l3", L3, 3);
+            let l0 = builder.new_affine("l0", 3072, HIDDEN_SIZE);
+            let l1 = builder.new_affine("l1", HIDDEN_SIZE, 1);
 
-            let hl1 = l0.forward(stm_inputs).crelu().pairwise_mul();
-            let hl2 = l1.forward(hl1).screlu();
-            let hl3 = l2.forward(hl2).screlu();
-
-            let l3_out = l3.forward(hl3);
-
-            let ones = builder.new_constant(Shape::new(1, 3), &[1.0; 3]);
-            let loss = ones.matmul(l3_out.softmax_crossentropy_loss(targets));
-            (l3_out, loss)
+            // inference
+            let hidden_layer = l0.forward(stm_inputs).screlu();
+            l1.forward(hidden_layer)
         });
 
     let schedule = TrainingSchedule {
-<<<<<<< HEAD
-        net_id: "vine_57_test6".to_string(),
-=======
-        net_id: "vine_57_test5".to_string(),
->>>>>>> 50373d9 (wdl outputs training)
+        net_id: "vine_43_test3".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
-            batch_size: 16_384 * 4,
-            batches_per_superbatch: 6104 / 4,
+            batch_size: 16_384,
+            batches_per_superbatch: 6104,
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES,
         },
-        wdl_scheduler: wdl::Warmup { inner: wdl::ConstantWDL { value: 1.0 }, warmup_batches: 2000 },
+        wdl_scheduler: wdl::ConstantWDL { value: 0.75 },
+        // wdl_scheduler: wdl::Sequence {
+        //     first: wdl::LinearWDL { start: 0.5, end: 0.75 },
+        //     second: wdl::ConstantWDL { value: 0.75 },
+        //     first_scheduler_final_superbatch: 200,
+        // },
         lr_scheduler: lr::Warmup {
-            inner: lr::ExponentialDecayLR {
+            inner: lr::LinearDecayLR {
                 initial_lr: 0.001,
-                final_lr: 0.001 * f32::powi(0.3, 7),
+                final_lr: 0.001 * f32::powi(0.3, 6),
                 final_superbatch: SUPERBATCHES,
             },
-            warmup_batches: 2000,
+            warmup_batches: 200,
         },
         save_rate: 10,
     };
@@ -255,11 +214,7 @@ fn main() {
         LocalSettings { threads: 8, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
     let data_loader = loader::ViriBinpackLoader::new(
-<<<<<<< HEAD
-        "/media/jonathanhallstrom/64a18cc9-6680-4f1b-a09f-56b812251151/vine_data/vine_37/vine_42_adj.vf",
-=======
-        "/home/jonathanhallstrom/dev/rust/bullet/vine_37/vine_37_adj.vf",
->>>>>>> 50373d9 (wdl outputs training)
+        "./3056/vine_dataset28.vf",
         16384,
         16,
         Filter {
@@ -282,8 +237,9 @@ fn main() {
         },
     );
 
-    trainer.load_from_checkpoint("checkpoints/vine_57_test5-3000/");
-    // trainer.run(&schedule, &settings, &data_loader);
+    trainer.optimiser.set_params(Default::default());
+    trainer.run(&schedule, &settings, &data_loader);
+    // trainer.load_from_checkpoint("checkpoints/vine_40-400");
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -292,20 +248,14 @@ fn main() {
         "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/P2P2PP/q2Q1R1K w kq - 0 2",
         "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
         "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-        "1k6/3r4/8/8/8/2r5/3P4/3KR3 w - - 0 1",
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1",
         "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "rn1qkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "r1bqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "1nbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQka - 0 1",
     ] {
-<<<<<<< HEAD
-        // let eval = -400.0 * (1.0 / trainer.eval(fen) - 1.0).ln();
-        let eval = 400.0 * trainer.eval(fen);
-=======
-        let eval = -400.0 * (1.0 / trainer.eval(fen) - 1.0).ln();
->>>>>>> 50373d9 (wdl outputs training)
+        let eval = trainer.eval(fen);
         println!("FEN: {fen}");
-        println!("EVAL: {}", eval);
+        println!("EVAL: {}", 400.0 * eval);
     }
 }
