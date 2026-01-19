@@ -11,8 +11,14 @@ use bullet_lib::{
     value::{ValueTrainerBuilder, loader},
 };
 use bulletformat::ChessBoard;
-use montyformat::chess::{Attacks, Piece, Side, consts::IN_BETWEEN};
+use montyformat::chess::{Attacks, Piece, Side};
 use viriformat::dataformat::Filter;
+
+const SUPERBATCHES: usize = 800;
+const HIDDEN_SIZE: usize = 1024;
+const SCALE: i32 = 400;
+const QA: i16 = 255;
+const QB: i16 = 64;
 
 #[derive(Clone, Copy, Default)]
 pub struct ThreatInputs;
@@ -111,31 +117,10 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
 
     let mut threats: [u64; 2] = [0; 2];
 
-    let mut pinned: [u64; 2] = [0; 2];
-
     for side in [Side::WHITE, Side::BLACK] {
-        let us = bbs[side];
-        let our_king_idx = (bbs[Piece::KING] & us).trailing_zeros() as usize;
-        let bishops = bbs[Piece::BISHOP];
-        let rooks = bbs[Piece::ROOK];
-        let queens = bbs[Piece::QUEEN];
-
-        let possible_pinners_rook = Attacks::xray_rook(our_king_idx, occ, us) & (rooks | queens) & !us;
-        let possible_pinners_bishop = Attacks::xray_bishop(our_king_idx, occ, us) & (bishops | queens) & !us;
-
-        map_bb(possible_pinners_bishop | possible_pinners_rook, |pinner| {
-            let between = IN_BETWEEN[our_king_idx][pinner];
-            if (between & us).count_ones() == 1 {
-                pinned[side] |= between;
-            }
-        });
-    }
-
-    for side in [Side::WHITE, Side::BLACK] {
-        let our_king_idx = (bbs[Piece::KING] & bbs[side]).trailing_zeros() as usize;
         for piece in Piece::PAWN..=Piece::KING {
             map_bb(bbs[side] & bbs[piece], |sq| {
-                let mut cur_threats = match piece {
+                threats[side] |= match piece {
                     Piece::PAWN => Attacks::pawn(sq, side),
                     Piece::KNIGHT => Attacks::knight(sq),
                     Piece::BISHOP => Attacks::bishop(sq, occ),
@@ -144,12 +129,6 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
                     Piece::KING => Attacks::king(sq),
                     _ => unreachable!(),
                 } & occ;
-
-                if pinned[side] & 1 << sq != 0 {
-                    cur_threats &= IN_BETWEEN[our_king_idx][sq];
-                }
-
-                threats[side] |= cur_threats;
             });
         }
     }
@@ -174,14 +153,6 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
     }
 }
 
-const SUPERBATCHES: usize = 2000;
-const L1: usize = 2048;
-const L2: usize = 16;
-const L3: usize = 128;
-const SCALE: i32 = 400;
-const QA: i16 = 255;
-const QB: i16 = 64;
-
 fn main() {
     let mut trainer = ValueTrainerBuilder::default()
         // makes `ntm_inputs` not available below
@@ -195,12 +166,8 @@ fn main() {
         .save_format(&[
             SavedFormat::id("l0w").round().quantise::<i16>(QA),
             SavedFormat::id("l0b").round().quantise::<i16>(QA),
-            SavedFormat::id("l1w").round().quantise::<i8>(QB),
-            SavedFormat::id("l1b"),
-            SavedFormat::id("l2w"),
-            SavedFormat::id("l2b"),
-            SavedFormat::id("l3w"),
-            SavedFormat::id("l3b"),
+            SavedFormat::id("l1w").round().quantise::<i16>(QB).transpose(),
+            SavedFormat::id("l1b").round().quantise::<i16>(QA * QB),
         ])
         // map output into ranges [0, 1] to fit against our labels which
         // are in the same range
@@ -209,19 +176,16 @@ fn main() {
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
         .build(|builder, stm_inputs| {
             // weights
-            let l0 = builder.new_affine("l0", 3072, L1);
-            let l1 = builder.new_affine("l1", L1 / 2, L2);
-            let l2 = builder.new_affine("l2", L2, L3);
-            let l3 = builder.new_affine("l3", L3, 1);
+            let l0 = builder.new_affine("l0", 3072, HIDDEN_SIZE);
+            let l1 = builder.new_affine("l1", HIDDEN_SIZE, 1);
 
-            let hl1 = l0.forward(stm_inputs).crelu().pairwise_mul();
-            let hl2 = l1.forward(hl1).screlu();
-            let hl3 = l2.forward(hl2).screlu();
-            l3.forward(hl3)
+            // inference
+            let hidden_layer = l0.forward(stm_inputs).screlu();
+            l1.forward(hidden_layer)
         });
 
     let schedule = TrainingSchedule {
-        net_id: "vine_55_test1".to_string(),
+        net_id: "vine_43_test3".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
             batch_size: 16_384,
@@ -229,11 +193,16 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES,
         },
-        wdl_scheduler: wdl::ConstantWDL { value: 1.0 },
+        wdl_scheduler: wdl::ConstantWDL { value: 0.75 },
+        // wdl_scheduler: wdl::Sequence {
+        //     first: wdl::LinearWDL { start: 0.5, end: 0.75 },
+        //     second: wdl::ConstantWDL { value: 0.75 },
+        //     first_scheduler_final_superbatch: 200,
+        // },
         lr_scheduler: lr::Warmup {
             inner: lr::LinearDecayLR {
                 initial_lr: 0.001,
-                final_lr: 0.001 * f32::powi(0.3, 5),
+                final_lr: 0.001 * f32::powi(0.3, 6),
                 final_superbatch: SUPERBATCHES,
             },
             warmup_batches: 200,
@@ -245,7 +214,7 @@ fn main() {
         LocalSettings { threads: 8, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
     let data_loader = loader::ViriBinpackLoader::new(
-        "",
+        "./3056/vine_dataset28.vf",
         16384,
         16,
         Filter {
@@ -268,7 +237,9 @@ fn main() {
         },
     );
 
+    trainer.optimiser.set_params(Default::default());
     trainer.run(&schedule, &settings, &data_loader);
+    // trainer.load_from_checkpoint("checkpoints/vine_40-400");
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -277,7 +248,6 @@ fn main() {
         "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/P2P2PP/q2Q1R1K w kq - 0 2",
         "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
         "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-        "1k6/3r4/8/8/8/2r5/3P4/3KR3 w - - 0 1",
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1",
         "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "rn1qkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
