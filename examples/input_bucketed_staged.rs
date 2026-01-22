@@ -25,7 +25,7 @@ use viriformat::{
 
 type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
-const NET_NAME: &'static str = "input_bucketed_2048_16";
+const NET_NAME: &'static str = "pawnocchio_multilayer";
 
 const SUPERBATCHES_STAGE1: usize = 800;
 const SUPERBATCHES_STAGE2: usize = 200;
@@ -184,11 +184,11 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE1,
         },
-        wdl_scheduler: wdl::LinearWDL { start: 0.25, end: 0.75 },
+        wdl_scheduler: wdl::LinearWDL { start: 0.25, end: 0.85 },
         lr_scheduler: lr::Warmup {
             inner: lr::LinearDecayLR {
                 initial_lr: 0.001,
-                final_lr: 0.001 * f32::powi(0.3, 3),
+                final_lr: 0.001 * f32::powi(0.3, 5),
                 final_superbatch: SUPERBATCHES_STAGE1,
             },
             warmup_batches: 200,
@@ -204,11 +204,11 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE2,
         },
-        wdl_scheduler: wdl::ConstantWDL { value: 0.75 },
+        wdl_scheduler: wdl::ConstantWDL { value: 0.85 },
         lr_scheduler: lr::Warmup {
             inner: lr::ExponentialDecayLR {
-                initial_lr: 0.001 * f32::powi(0.3, 3),
-                final_lr: 0.001 * f32::powi(0.3, 5),
+                initial_lr: 0.001 * f32::powi(0.3, 5),
+                final_lr: 0.001 * f32::powi(0.3, 7),
                 final_superbatch: SUPERBATCHES_STAGE2,
             },
             warmup_batches: 200,

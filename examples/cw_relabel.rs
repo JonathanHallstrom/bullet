@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bullet_cuda_backend::cudarc::driver::result::occupancy;
 use bullet_lib::{
     game::{inputs::ChessBucketsMirrored, outputs::MaterialCount},
     nn::optimiser::AdamW,
@@ -22,14 +21,15 @@ use viriformat::{
     dataformat::{Filter, WDL},
 };
 type Optimiser = AdamW;
-const NET_NAME: &'static str = "512_testnet_vine_01_13_2";
+const NET_NAME: &'static str = "cw_relabel_1024";
 
-const SUPERBATCHES_STAGE1: usize = 50;
-const HIDDEN_SIZE: usize = 512;
+const SUPERBATCHES_STAGE1: usize = 200;
+const HIDDEN_SIZE: usize = 1024;
 const SCALE: i32 = 400;
 const QA: i16 = 255;
 const QB: i16 = 64;
-const NUM_OUTPUT_BUCKETS: usize = 8;
+const NUM_OUTPUT_BUCKETS: usize = 1;
+const WDL: f32 = 1.0;
 
 use std::cell::RefCell;
 
@@ -90,12 +90,7 @@ fn filter(board: &Board, mv: Move, eval: i16, wdl: f32) -> bool {
         random_fen_skipping: true,
         random_fen_skip_probability: 0.25,
         wdl_filtered: false,
-        wdl_model_params_a: [0.0; 4],
-        wdl_model_params_b: [0.0; 4],
-        wdl_heuristic_scale: 0.0,
-        material_min: 0,
-        material_max: 32,
-        mom_target: 0,
+        ..Default::default()
     };
     let mut rng = rng();
     let wdl = match wdl {
@@ -114,7 +109,7 @@ fn main() {
         .dual_perspective()
         .optimiser(Optimiser::default())
         .inputs(ChessBucketsMirrored::default())
-        .output_buckets(MaterialCount::<NUM_OUTPUT_BUCKETS>)
+        // .output_buckets(MaterialCount::<NUM_OUTPUT_BUCKETS>)
         .save_format(&[
             SavedFormat::id("l0w").quantise::<i16>(QA),
             SavedFormat::id("l0b").quantise::<i16>(QA),
@@ -122,13 +117,13 @@ fn main() {
             SavedFormat::id("l1b").quantise::<i16>(QA * QB),
         ])
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
-        .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
+        .build(|builder, stm_inputs, ntm_inputs /*, output_buckets*/| {
             let l0 = builder.new_affine("l0", 768, HIDDEN_SIZE);
             let l1 = builder.new_affine("l1", 2 * HIDDEN_SIZE, NUM_OUTPUT_BUCKETS);
             let stm_hidden = l0.forward(stm_inputs).screlu();
             let ntm_hidden = l0.forward(ntm_inputs).screlu();
             let hidden_layer = stm_hidden.concat(ntm_hidden);
-            l1.forward(hidden_layer).select(output_buckets)
+            l1.forward(hidden_layer) /*.select(output_buckets)*/
         });
 
     let schedule = TrainingSchedule {
@@ -140,11 +135,15 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE1,
         },
-        wdl_scheduler: schedule::wdl::ConstantWDL { value: 0.75 },
+        wdl_scheduler: schedule::wdl::Sequence {
+            first: schedule::wdl::LinearWDL { start: 0.5, end: WDL },
+            second: schedule::wdl::ConstantWDL { value: WDL },
+            first_scheduler_final_superbatch: SUPERBATCHES_STAGE1 / 2,
+        },
         lr_scheduler: schedule::lr::Warmup {
-            inner: schedule::lr::CosineDecayLR {
-                initial_lr: 0.001,
-                final_lr: 0.001 * f32::powi(0.3, 4),
+            inner: schedule::lr::ExponentialDecayLR {
+                initial_lr: 1e-3,
+                final_lr: 1e-7,
                 final_superbatch: SUPERBATCHES_STAGE1,
             },
             warmup_batches: 200,
@@ -153,18 +152,11 @@ fn main() {
     };
 
     let settings =
-        LocalSettings { threads: 8, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
+        LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
-    // let viriformat_dataset = "/home/jonathanhallstrom/dev/rust/bullet/2985/pawnocchio_data_for_vine_comparison.vf";
-    // let viriformat_dataset = "/home/jonathanhallstrom/dev/rust/bullet/vine_dataset32.vf";
-    // let viriformat_dataset = "/media/jonathanhallstrom/64a18cc9-6680-4f1b-a09f-56b812251151/vine_data/dataset_33_relabel/vine_dataset33_relabelled.vf";
-    // let binpack_dataset = "/home/jonathanhallstrom/dev/rust/bullet/vine_37/vine_dataset37_partial_relabelled.vf";
-    let binpack_dataset = "/home/jonathanhallstrom/dev/rust/bullet/vine_38/vine_38_10m.vf_relabeled";
-    // let binpack_dataset = "/home/jonathanhallstrom/dev/rust/bullet/vine_39/output1.bin_relabeled";
-    let binpack_dataset = "/home/jonathanhallstrom/dev/rust/bullet/vine_40/vine_40_10m.vf_relabeled";
-    let binpack_dataset = "/home/jonathanhallstrom/dev/rust/bullet/vine_42/vine_42_10m.vf_relabeled";
+    let binpack_dataset = "/home/jonathanhallstrom/dev/rust/bullet/clockwork_data/cw_combined.vf";
 
-    trainer.run(&schedule, &settings, &ViriBinpackLoader::new(binpack_dataset, 16384, 24, ViriFilter::Custom(filter)));
+    trainer.run(&schedule, &settings, &ViriBinpackLoader::new(binpack_dataset, 16384, 16, ViriFilter::Custom(filter)));
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",

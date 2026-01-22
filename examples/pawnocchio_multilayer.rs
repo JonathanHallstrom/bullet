@@ -133,7 +133,15 @@ fn main() {
                 .round()
                 .quantise::<i16>(Q0),
             SavedFormat::id("l0b").round().quantise::<i16>(Q0),
-            SavedFormat::id("l1w").round().quantise::<i8>(Q1),
+            SavedFormat::id("l1w")
+                .transform(|_, mut weights| {
+                    for i in weights.iter_mut() {
+                        *i /= FT_SHIFT_SCALE;
+                    }
+                    weights
+                })
+                .round()
+                .quantise::<i8>(Q1),
             SavedFormat::id("l1b").round().quantise::<i32>(Q1 as i32),
             SavedFormat::id("l2w").round().quantise::<i32>(Q as i32),
             SavedFormat::id("l2b").round().quantise::<i32>((Q as i32).pow(3)),

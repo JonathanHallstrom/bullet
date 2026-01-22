@@ -174,8 +174,8 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
     }
 }
 
-const SUPERBATCHES: usize = 3000;
-const L1: usize = 4096;
+const SUPERBATCHES: usize = 1000;
+const L1: usize = 1024;
 const L2: usize = 16;
 const L3: usize = 128;
 const SCALE: i32 = 400;
@@ -217,7 +217,7 @@ fn main() {
         });
 
     let schedule = TrainingSchedule {
-        net_id: "vine_57_test6".to_string(),
+        net_id: "vine_rec_baseline".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
             batch_size: 16_384 * 4,

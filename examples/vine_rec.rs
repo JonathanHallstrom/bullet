@@ -2,7 +2,7 @@ use std::u32;
 
 use bullet_lib::{
     game::inputs::{self},
-    nn::{Shape, optimiser},
+    nn::{Affine, InitSettings, Shape, optimiser},
     trainer::{
         save::SavedFormat,
         schedule::{TrainingSchedule, TrainingSteps, lr, wdl},
@@ -174,10 +174,11 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
     }
 }
 
-const SUPERBATCHES: usize = 3000;
-const L1: usize = 4096;
+const SUPERBATCHES: usize = 1000;
+const L1: usize = 1024;
 const L2: usize = 16;
 const L3: usize = 128;
+const RECURRENCES: usize = 4;
 const SCALE: i32 = 400;
 const QA: i16 = 255;
 const QB: i16 = 64;
@@ -197,6 +198,8 @@ fn main() {
             SavedFormat::id("l0b").round().quantise::<i16>(QA),
             SavedFormat::id("l1w").round().quantise::<i8>(QB),
             SavedFormat::id("l1b"),
+            SavedFormat::id("l2rw"),
+            SavedFormat::id("l2rb"),
             SavedFormat::id("l2w"),
             SavedFormat::id("l2b"),
             SavedFormat::id("l3w"),
@@ -208,16 +211,31 @@ fn main() {
             let l0 = builder.new_affine("l0", 3072, L1);
             let l1 = builder.new_affine("l1", L1 / 2, L2);
             let l2 = builder.new_affine("l2", L2, L3);
+
+            let l2rw = builder.new_weights("l2rw", Shape::new(L2, L2), InitSettings::Normal { mean: 0., stdev: 0.1 });
+            let l2rb = builder.new_weights("l2rb", Shape::new(L2, 1), InitSettings::Normal { mean: 0., stdev: 0.1 });
+            let l2r = Affine { weights: l2rw, bias: l2rb };
+
             let l3 = builder.new_affine("l3", L3, 1);
 
             let hl1 = l0.forward(stm_inputs).crelu().pairwise_mul();
-            let hl2 = l1.forward(hl1).screlu();
+            let l1_out = l1.forward(hl1).screlu();
+            let mut hl2 = l1_out;
+            for _ in 0..RECURRENCES {
+                let l2r_out = l2r.forward(hl2);
+                // activation:
+                // x / sqrt(1 + abs(x))
+                let l2r_abs = l2r_out.abs_pow(1.0);
+                let l2r_out = l2r_out * (1.0 + l2r_abs).abs_pow(-0.5);
+
+                hl2 = hl2 + l2r_out;
+            }
             let hl3 = l2.forward(hl2).screlu();
             l3.forward(hl3)
         });
 
     let schedule = TrainingSchedule {
-        net_id: "vine_57_test6".to_string(),
+        net_id: "vine_rec_2".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
             batch_size: 16_384 * 4,
@@ -264,6 +282,7 @@ fn main() {
         },
     );
 
+    // trainer.load_from_checkpoint("checkpoints/vine_rec_1-10");
     trainer.run(&schedule, &settings, &data_loader);
 
     for fen in [
