@@ -25,7 +25,7 @@ use viriformat::{
 
 type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
-const NET_NAME: &'static str = "pawnocchio_multilayer_2048";
+const NET_NAME: &'static str = "pawnocchio_multilayer_2048_2";
 
 const SUPERBATCHES_STAGE1: usize = 800;
 const SUPERBATCHES_STAGE2: usize = 200;
@@ -160,15 +160,20 @@ fn main() {
 
             // output layer weights
             let l1 = builder.new_affine("l1", L1, OUTPUT_BUCKETS * L2);
-            let l2 = builder.new_affine("l2", L2, OUTPUT_BUCKETS * L3);
+            let l2 = builder.new_affine("l2", L2 * 2, OUTPUT_BUCKETS * L3);
             let l3 = builder.new_affine("l3", L3, OUTPUT_BUCKETS);
 
             // inference
             let stm_hidden = l0.forward(stm_inputs).crelu().pairwise_mul();
             let ntm_hidden = l0.forward(ntm_inputs).crelu().pairwise_mul();
             let hl1 = stm_hidden.concat(ntm_hidden);
-            let hl2 = l1.forward(hl1).select(output_buckets).screlu();
-            let hl3 = l2.forward(hl2).select(output_buckets).crelu();
+
+            let l1_out = l1.forward(hl1).select(output_buckets);
+            let hl2 = l1_out.concat(l1_out.abs_pow(2.0)).crelu();
+
+            let l2_out = l2.forward(hl2).select(output_buckets);
+            let hl3 = l2_out.crelu();
+
             l3.forward(hl3).select(output_buckets)
         });
     let l0_clip = OptimiserParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
@@ -182,8 +187,8 @@ fn main() {
         net_id: NET_NAME.to_string() + "_stage1",
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
-            batch_size: 16_384 * 4,
-            batches_per_superbatch: 6104 / 4,
+            batch_size: 16_384 * 8,
+            batches_per_superbatch: 6104 / 8,
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE1,
         },
@@ -202,8 +207,8 @@ fn main() {
         net_id: NET_NAME.to_string() + "_stage2",
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
-            batch_size: 16_384 * 4,
-            batches_per_superbatch: 6104 / 4,
+            batch_size: 16_384 * 8,
+            batches_per_superbatch: 6104 / 8,
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE2,
         },
@@ -222,22 +227,21 @@ fn main() {
     let settings =
         LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
-    let binpack_dataset =
-        "/media/jonathanhallstrom/64a18cc9-6680-4f1b-a09f-56b812251151/vine_data/vine_37/mixed_data.vf";
+    let binpack_dataset = "/k2/vine_data/vine_37/mixed_data.vf";
 
-    // trainer.run(
-    //     &stage1_schedule,
-    //     &settings,
-    //     &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
-    // );
-    // trainer.run(
-    //     &stage2_schedule,
-    //     &settings,
-    //     &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
-    // );
+    trainer.run(
+        &stage1_schedule,
+        &settings,
+        &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
+    );
+    trainer.run(
+        &stage2_schedule,
+        &settings,
+        &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
+    );
 
-    trainer.load_from_checkpoint("checkpoints/pawnocchio_multilayer_2048_stage2-200");
-    trainer.save_to_checkpoint("checkpoints/pawnocchio_multilayer_2048_stage2-200_requantise");
+    // trainer.load_from_checkpoint("checkpoints/pawnocchio_multilayer_2048_stage2-200");
+    // trainer.save_to_checkpoint("checkpoints/pawnocchio_multilayer_2048_stage2-200_requantise");
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
