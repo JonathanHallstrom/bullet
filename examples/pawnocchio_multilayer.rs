@@ -25,7 +25,7 @@ use viriformat::{
 
 type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
-const NET_NAME: &'static str = "pawnocchio_multilayer_2048_2";
+const NET_NAME: &'static str = "pawnocchio_multilayer";
 
 const SUPERBATCHES_STAGE1: usize = 800;
 const SUPERBATCHES_STAGE2: usize = 200;
@@ -212,7 +212,7 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE2,
         },
-        wdl_scheduler: wdl::ConstantWDL { value: 0.85 },
+        wdl_scheduler: wdl::ConstantWDL { value: 1.0 },
         lr_scheduler: lr::Warmup {
             inner: lr::ExponentialDecayLR {
                 initial_lr: 0.001 * f32::powi(0.3, 5),
@@ -227,7 +227,7 @@ fn main() {
     let settings =
         LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
-    let binpack_dataset = "/k2/vine_data/vine_37/mixed_data.vf";
+    let binpack_dataset = "/k4/vine_data/vine_37/mixed_data.vf";
 
     trainer.run(
         &stage1_schedule,
@@ -240,7 +240,7 @@ fn main() {
         &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
     );
 
-    // trainer.load_from_checkpoint("checkpoints/pawnocchio_multilayer_2048_stage2-200");
+    // trainer.load_from_checkpoint("checkpoints/pawnocchio_multilayer_2048_2_stage1-1");
     // trainer.save_to_checkpoint("checkpoints/pawnocchio_multilayer_2048_stage2-200_requantise");
 
     for fen in [
