@@ -1,3 +1,5 @@
+use acyclib::graph::builder::GraphBuilderNode;
+use bullet_cuda_backend::CudaMarker;
 use std::u32;
 
 use bullet_lib::{
@@ -207,22 +209,30 @@ fn main() {
             // weights
             let l0 = builder.new_affine("l0", 3072, L1);
             let l1 = builder.new_affine("l1", L1 / 2, L2);
-            let l2 = builder.new_affine("l2", L2, L3);
+            let l2 = builder.new_affine("l2", L2, L3 * 2);
             let l3 = builder.new_affine("l3", L3, 1);
 
+            fn hardswish6<'a>(x: GraphBuilderNode<'a, CudaMarker>) -> GraphBuilderNode<'a, CudaMarker> {
+                (x * (1.0 / 6.0) + 0.5).crelu()
+            }
+
             let hl1 = l0.forward(stm_inputs).crelu().pairwise_mul();
-            let hl2 = l1.forward(hl1).screlu();
-            let hl3 = l2.forward(hl2).screlu();
+            let l1_out = l1.forward(hl1);
+
+            let hl2 = l1_out * hardswish6(l1_out);
+            let l2_out = l2.forward(hl2);
+
+            let hl3 = l2_out.slice_rows(0, L3) * hardswish6(l2_out.slice_rows(L3, 2 * L3));
             l3.forward(hl3)
         });
 
     let schedule = TrainingSchedule {
-        net_id: "vine_57_test6".to_string(),
+        net_id: "vine_59_test1".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
             batch_size: 16_384 * 4,
             batches_per_superbatch: 6104 / 4,
-            start_superbatch: 1,
+            start_superbatch: 2101,
             end_superbatch: SUPERBATCHES,
         },
         wdl_scheduler: wdl::Warmup { inner: wdl::ConstantWDL { value: 1.0 }, warmup_batches: 2000 },
@@ -234,14 +244,15 @@ fn main() {
             },
             warmup_batches: 2000,
         },
-        save_rate: 10,
+        save_rate: 100,
     };
 
     let settings =
         LocalSettings { threads: 8, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
     let data_loader = loader::ViriBinpackLoader::new(
-        "/media/jonathanhallstrom/64a18cc9-6680-4f1b-a09f-56b812251151/vine_data/vine_37/vine_42_adj.vf",
+        "/k4/vine_data/vine_43/vine_43_adj.vf",
+        // "/k4/vine_data/vine_37/vine_42_adj.vf",
         16384,
         16,
         Filter {
@@ -264,6 +275,7 @@ fn main() {
         },
     );
 
+    trainer.load_from_checkpoint("checkpoints/vine_59_test1-2100");
     trainer.run(&schedule, &settings, &data_loader);
 
     for fen in [
