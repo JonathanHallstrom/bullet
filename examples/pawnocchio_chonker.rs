@@ -25,18 +25,18 @@ use viriformat::{
 
 type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
-const NET_NAME: &'static str = "pawnocchio_chonked2";
+const NET_NAME: &'static str = "pawnocchio_chonker";
 
-const SUPERBATCHES_STAGE1: usize = 800;
+const SUPERBATCHES_STAGE1: usize = 1000;
 const SUPERBATCHES_STAGE2: usize = 200;
-const L1: usize = 2048;
-const L2: usize = 16;
-const L3: usize = 32;
+const L1: usize = 4096;
+const L2: usize = 128;
+const L3: usize = 256;
 const SCALE: i32 = 400;
 const Q0: i16 = 255;
 const Q1: i16 = 128;
 const Q: i16 = 64;
-const INPUT_BUCKETS: usize = 16;
+const INPUT_BUCKETS: usize = 4;
 const OUTPUT_BUCKETS: usize = 8;
 
 const FT_SHIFT: usize = 8;
@@ -44,16 +44,30 @@ const FT_SHIFT_SCALE: f32 = Q0 as f32 / ((1 << FT_SHIFT) as f32);
 const I8_RANGE: f32 = i8::MAX as f32 / (Q1 as f32);
 const L1_RANGE: f32 = I8_RANGE * FT_SHIFT_SCALE * FT_SHIFT_SCALE;
 
+static FILTER_TOTAL: AtomicU64 = AtomicU64::new(0);
+static FILTER_KEPT: AtomicU64 = AtomicU64::new(0);
+static FILTER_VIRI_REJECTED: AtomicU64 = AtomicU64::new(0);
+static FILTER_PIECE_COUNT_REJECTED: AtomicU64 = AtomicU64::new(0);
+const FILTER_STATS_SAMPLE_RATE: f64 = 0.01;
+
 #[rustfmt::skip]
 const BUCKET_LAYOUT: [usize; 32] = [
-     0,  1,  2,  3,
-     4,  5,  6,  7,
-     8,  8,  9,  9,
-    10, 10, 11, 11,
-    12, 12, 13, 13,
-    12, 12, 13, 13,
-    14, 14, 15, 15,
-    14, 14, 15, 15,
+     0,  0,  1,  1,
+     2,  2,  2,  2,
+     3,  3,  3,  3,
+     3,  3,  3,  3,
+     3,  3,  3,  3,
+     3,  3,  3,  3,
+     3,  3,  3,  3,
+     3,  3,  3,  3,
+    //  0,  1,  2,  3,
+    //  4,  5,  6,  7,
+    //  8,  8,  9,  9,
+    // 10, 10, 11, 11,
+    // 12, 12, 13, 13,
+    // 12, 12, 13, 13,
+    // 14, 14, 15, 15,
+    // 14, 14, 15, 15,
 ];
 
 fn piece_count_acceptance(board: &Board) -> f64 {
@@ -84,6 +98,7 @@ fn piece_count_acceptance(board: &Board) -> f64 {
     let acceptance = 0.5 * DESIRED_DISTRIBUTION[pc] / frequency;
     acceptance.clamp(0., 1.)
 }
+
 fn filter(board: &Board, mv: Move, eval: i16, wdl: f32) -> bool {
     let default_viri_filter = Filter {
         min_ply: 16,
@@ -109,9 +124,46 @@ fn filter(board: &Board, mv: Move, eval: i16, wdl: f32) -> bool {
         _ => unreachable!(),
     };
 
-    !default_viri_filter.should_filter(mv, eval as i32, board, wdl, &mut rng)
-        && rng.random_bool(piece_count_acceptance(board))
+    let sample_stats = rng.random_bool(FILTER_STATS_SAMPLE_RATE);
+
+    if sample_stats {
+        FILTER_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
+
+    if default_viri_filter.should_filter(mv, eval as i32, board, wdl, &mut rng) {
+        if sample_stats {
+            FILTER_VIRI_REJECTED.fetch_add(1, Ordering::Relaxed);
+        }
+        return false;
+    }
+
+    if !rng.random_bool(piece_count_acceptance(board)) {
+        if sample_stats {
+            FILTER_PIECE_COUNT_REJECTED.fetch_add(1, Ordering::Relaxed);
+        }
+        return false;
+    }
+
+    if sample_stats {
+        FILTER_KEPT.fetch_add(1, Ordering::Relaxed);
+    }
+
+    true
 }
+
+fn print_filter_stats() {
+    let sampled_total = FILTER_TOTAL.load(Ordering::Relaxed);
+    let kept = FILTER_KEPT.load(Ordering::Relaxed);
+    let viri_rejected = FILTER_VIRI_REJECTED.load(Ordering::Relaxed);
+    let piece_count_rejected = FILTER_PIECE_COUNT_REJECTED.load(Ordering::Relaxed);
+
+    let pct = |count| 100.0 * count as f64 / sampled_total.max(1) as f64;
+
+    println!("kept: {:.2}%", pct(kept));
+    println!("viri rejected: {:.2}%", pct(viri_rejected));
+    println!("piece-count rejected: {:.2}%", pct(piece_count_rejected));
+}
+
 fn main() {
     let mut trainer = ValueTrainerBuilder::default()
         .dual_perspective()
@@ -195,28 +247,28 @@ fn main() {
         net_id: NET_NAME.to_string() + "_stage1",
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
-            batch_size: 16_384 * 8,
-            batches_per_superbatch: 6104 / 8,
-            start_superbatch: 1,
+            batch_size: 16_384 * 4,
+            batches_per_superbatch: 6104 / 4,
+            start_superbatch: 526,
             end_superbatch: SUPERBATCHES_STAGE1,
         },
-        wdl_scheduler: wdl::LinearWDL { start: 0.25, end: 0.65 },
+        wdl_scheduler: wdl::LinearWDL { start: 1.0, end: 1.0 },
         lr_scheduler: lr::Warmup {
             inner: lr::LinearDecayLR {
-                initial_lr: 0.001,
+                initial_lr: 0.001 * f32::powi(0.3, 3),
                 final_lr: 0.001 * f32::powi(0.3, 5),
                 final_superbatch: SUPERBATCHES_STAGE1,
             },
             warmup_batches: 200,
         },
-        save_rate: 100,
+        save_rate: 25,
     };
     let stage2_schedule = TrainingSchedule {
         net_id: NET_NAME.to_string() + "_stage2",
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
-            batch_size: 16_384 * 8,
-            batches_per_superbatch: 6104 / 8,
+            batch_size: 16_384 * 4,
+            batches_per_superbatch: 6104 / 4,
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE2,
         },
@@ -229,14 +281,15 @@ fn main() {
             },
             warmup_batches: 200,
         },
-        save_rate: 100,
+        save_rate: 25,
     };
 
     let settings =
         LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
-    let binpack_dataset = "/k4/vine_data/vine_37/mixed_data_chonked.vf";
+    let binpack_dataset = "/k4/vine_data/vine_43/mixed_data_big.vf";
 
+    trainer.load_from_checkpoint("checkpoints/pawnocchio_chonker_stage1-525");
     trainer.run(
         &stage1_schedule,
         &settings,
@@ -247,6 +300,8 @@ fn main() {
         &settings,
         &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
     );
+
+    print_filter_stats();
 
     // trainer.load_from_checkpoint("checkpoints/pawnocchio_multilayer_2048_2_stage1-1");
     // trainer.save_to_checkpoint("checkpoints/pawnocchio_multilayer_2048_stage2-200_requantise");
