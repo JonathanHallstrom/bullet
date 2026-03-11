@@ -25,7 +25,7 @@ use viriformat::{
 
 type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
-const NET_NAME: &'static str = "pawnocchio_chonked2";
+const NET_NAME: &'static str = "pawnocchio_chonked5";
 
 const SUPERBATCHES_STAGE1: usize = 800;
 const SUPERBATCHES_STAGE2: usize = 200;
@@ -200,7 +200,7 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE1,
         },
-        wdl_scheduler: wdl::LinearWDL { start: 0.25, end: 0.65 },
+        wdl_scheduler: wdl::LinearWDL { start: 0.0, end: 0.5 },
         lr_scheduler: lr::Warmup {
             inner: lr::LinearDecayLR {
                 initial_lr: 0.001,
