@@ -1,6 +1,6 @@
 use bullet_lib::{
     game::{
-        inputs::{Chess768, ChessBucketsMirrored, get_num_buckets},
+        inputs::{ChessBucketsMirrored, get_num_buckets},
         outputs::MaterialCount,
     },
     nn::{
@@ -26,25 +26,25 @@ fn main() {
     let L2_SIZE = 16;
     // let dataset1_path = "/ramdisk/net3data.binpack";
     // let dataset_path = "/k4/quant_data/net14data_all.binpack";
-    let dataset_path = "/k4/quant_data/net26_net29_data.binpack";
+    let dataset_path = "/k4/quant_data/net26_net29_net34data.binpack";
     let initial_lr = 1e-3;
     let final_lr = 1e-3 * 0.3f32.powi(4);
-    let s1_superbatches = 40;
-    let s2_superbatches = 20;
+    let s1_superbatches = 400;
+    let s2_superbatches = 200;
     let cosine_lr = |sbs, initial_lr, final_lr| lr::CosineDecayLR { initial_lr, final_lr, final_superbatch: sbs };
     let linear_wdl = |start, end| wdl::LinearWDL { start, end };
     const NUM_OUTPUT_BUCKETS: usize = 8;
-    #[rustfmt::skip]
-    const BUCKET_LAYOUT: [usize; 32] = [
-        0, 0, 0, 0,
-        0, 0, 0, 0,
-        0, 0, 0, 0,
-        0, 0, 0, 0,
-        0, 0, 0, 0,
-        0, 0, 0, 0,
-        0, 0, 0, 0,
-        0, 0, 0, 0,
-    ];
+    // #[rustfmt::skip]
+    // const BUCKET_LAYOUT: [usize; 32] = [
+    //     0, 0, 0, 0,
+    //     0, 0, 0, 0,
+    //     0, 0, 0, 0,
+    //     0, 0, 0, 0,
+    //     0, 0, 0, 0,
+    //     0, 0, 0, 0,
+    //     0, 0, 0, 0,
+    //     0, 0, 0, 0,
+    // ];
     // #[rustfmt::skip]
     // const BUCKET_LAYOUT: [usize; 32] = [
     //     0, 0, 1, 1,
@@ -56,32 +56,30 @@ fn main() {
     //     3, 3, 3, 3,
     //     3, 3, 3, 3,
     // ];
-    // #[rustfmt::skip]
-    // const BUCKET_LAYOUT: [usize; 32] = [
-    //     0, 1, 2, 3,
-    //     4, 4, 5, 5,
-    //     6, 6, 6, 6,
-    //     6, 6, 6, 6,
-    //     7, 7, 7, 7,
-    //     7, 7, 7, 7,
-    //     7, 7, 7, 7,
-    //     7, 7, 7, 7,
-    // ];
+    #[rustfmt::skip]
+    const BUCKET_LAYOUT: [usize; 32] = [
+        0, 1, 2, 3,
+        4, 4, 5, 5,
+        6, 6, 6, 6,
+        6, 6, 6, 6,
+        7, 7, 7, 7,
+        7, 7, 7, 7,
+        7, 7, 7, 7,
+        7, 7, 7, 7,
+    ];
 
     const NUM_INPUT_BUCKETS: usize = get_num_buckets(&BUCKET_LAYOUT);
-    println!("{NUM_INPUT_BUCKETS}");
 
     let mut trainer = ValueTrainerBuilder::default()
         .dual_perspective()
         .optimiser(AdamW)
-        // .inputs(ChessBucketsMirrored::new(BUCKET_LAYOUT))
-        .inputs(Chess768)
+        .inputs(ChessBucketsMirrored::new(BUCKET_LAYOUT))
         .output_buckets(MaterialCount::<NUM_OUTPUT_BUCKETS>)
         .save_format(&[
-            SavedFormat::id("l0w"), //     .transform(|store, weights| {
-            //     let factoriser = store.get("l0f").values.repeat(NUM_INPUT_BUCKETS);
-            //     weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
-            // })
+            SavedFormat::id("l0w").transform(|store, weights| {
+                let factoriser = store.get("l0f").values.repeat(NUM_INPUT_BUCKETS);
+                weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
+            }),
             SavedFormat::id("l0b"),
             SavedFormat::id("l1w").transpose(),
             SavedFormat::id("l1b"),
@@ -93,13 +91,13 @@ fn main() {
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
         .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
             // input layer factoriser
-            // let l0f = builder.new_weights("l0f", Shape::new(L1_SIZE, 768), InitSettings::Zeroed);
-            // let expanded_factoriser = l0f.repeat(NUM_INPUT_BUCKETS);
+            let l0f = builder.new_weights("l0f", Shape::new(L1_SIZE, 768), InitSettings::Zeroed);
+            let expanded_factoriser = l0f.repeat(NUM_INPUT_BUCKETS);
 
             // input layer weights
             let mut l0 = builder.new_affine("l0", 768 * NUM_INPUT_BUCKETS, L1_SIZE);
             l0.init_with_effective_input_size(32);
-            l0.weights = l0.weights /* + expanded_factoriser */;
+            l0.weights = l0.weights + expanded_factoriser;
 
             // layerstack weights
             let l1 = builder.new_affine("l1", L1_SIZE, NUM_OUTPUT_BUCKETS * L2_SIZE);
@@ -120,16 +118,16 @@ fn main() {
     // need to account for factoriser weight magnitudes
     let stricter_clipping = AdamWParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
     trainer.optimiser.set_params_for_weight("l0w", stricter_clipping);
-    // trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
+    trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
     trainer.optimiser.set_params_for_weight("l1w", stricter_clipping);
 
-    let id = "net36_test";
+    let id = "net35_1536";
     let stage1 = TrainingSchedule {
         net_id: id.to_string() + "_stage1",
         eval_scale: 400.0,
         steps: TrainingSteps {
-            batch_size: 16_384 * 8,
-            batches_per_superbatch: 6104 / 8,
+            batch_size: 16_384,
+            batches_per_superbatch: 6104,
             start_superbatch: 1,
             end_superbatch: s1_superbatches,
         },
@@ -141,8 +139,8 @@ fn main() {
         net_id: id.to_string() + "_stage2",
         eval_scale: 400.0,
         steps: TrainingSteps {
-            batch_size: 16_384 * 8,
-            batches_per_superbatch: 6104 / 8,
+            batch_size: 16_384,
+            batches_per_superbatch: 6104,
             start_superbatch: 1,
             end_superbatch: s2_superbatches,
         },
@@ -160,7 +158,7 @@ fn main() {
             entry.ply >= 16
                 && !entry.pos.is_checked(entry.pos.side_to_move())
                 && entry.score.unsigned_abs() <= 16000
-                && (entry.mv.mtype() == MoveType::Normal || entry.mv.mtype() == MoveType::Castle)
+                && entry.mv.mtype() == MoveType::Normal
                 && entry.pos.piece_at(entry.mv.to()).piece_type() == PieceType::None
         }
 
