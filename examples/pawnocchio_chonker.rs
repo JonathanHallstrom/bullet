@@ -27,8 +27,7 @@ type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
 const NET_NAME: &'static str = "pawnocchio_chonker";
 
-const SUPERBATCHES_STAGE1: usize = 1000;
-const SUPERBATCHES_STAGE2: usize = 200;
+const SUPERBATCHES_STAGE: usize = 3000;
 const L1: usize = 4096;
 const L2: usize = 128;
 const L3: usize = 256;
@@ -243,41 +242,21 @@ fn main() {
     let l1_clip = OptimiserParams { max_weight: L1_RANGE, min_weight: -L1_RANGE, ..Default::default() };
     trainer.optimiser.set_params_for_weight("l1w", l1_clip);
 
-    let stage1_schedule = TrainingSchedule {
-        net_id: NET_NAME.to_string() + "_stage1",
+    let schedule = TrainingSchedule {
+        net_id: NET_NAME.to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
             batch_size: 16_384 * 4,
             batches_per_superbatch: 6104 / 4,
             start_superbatch: 526,
-            end_superbatch: SUPERBATCHES_STAGE1,
-        },
-        wdl_scheduler: wdl::LinearWDL { start: 1.0, end: 1.0 },
-        lr_scheduler: lr::Warmup {
-            inner: lr::LinearDecayLR {
-                initial_lr: 0.001 * f32::powi(0.3, 3),
-                final_lr: 0.001 * f32::powi(0.3, 5),
-                final_superbatch: SUPERBATCHES_STAGE1,
-            },
-            warmup_batches: 200,
-        },
-        save_rate: 25,
-    };
-    let stage2_schedule = TrainingSchedule {
-        net_id: NET_NAME.to_string() + "_stage2",
-        eval_scale: SCALE as f32,
-        steps: TrainingSteps {
-            batch_size: 16_384 * 4,
-            batches_per_superbatch: 6104 / 4,
-            start_superbatch: 1,
-            end_superbatch: SUPERBATCHES_STAGE2,
+            end_superbatch: SUPERBATCHES_STAGE,
         },
         wdl_scheduler: wdl::ConstantWDL { value: 1.0 },
         lr_scheduler: lr::Warmup {
-            inner: lr::ExponentialDecayLR {
-                initial_lr: 0.001 * f32::powi(0.3, 5),
+            inner: lr::LinearDecayLR {
+                initial_lr: 0.001 * f32::powi(0.3, 0),
                 final_lr: 0.001 * f32::powi(0.3, 7),
-                final_superbatch: SUPERBATCHES_STAGE2,
+                final_superbatch: SUPERBATCHES_STAGE,
             },
             warmup_batches: 200,
         },
@@ -290,16 +269,7 @@ fn main() {
     let binpack_dataset = "/k4/vine_data/vine_43/mixed_data_big.vf";
 
     trainer.load_from_checkpoint("checkpoints/pawnocchio_chonker_stage1-525");
-    trainer.run(
-        &stage1_schedule,
-        &settings,
-        &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
-    );
-    trainer.run(
-        &stage2_schedule,
-        &settings,
-        &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
-    );
+    trainer.run(&schedule, &settings, &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)));
 
     print_filter_stats();
 
