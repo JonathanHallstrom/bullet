@@ -24,9 +24,7 @@ fn main() {
     // hyperparams to fiddle with
     let L1_SIZE = 1536;
     let L2_SIZE = 16;
-    // let dataset1_path = "/ramdisk/net3data.binpack";
-    // let dataset_path = "/k4/quant_data/net14data_all.binpack";
-    let dataset_path = "/k4/quant_data/net26_net29_net34data.binpack";
+    let dataset_path = "/k4/quant_data/net26_net29_net34_net38data_shuffled.binpack";
     let initial_lr = 1e-3;
     let final_lr = 1e-3 * 0.3f32.powi(4);
     let s1_superbatches = 400;
@@ -121,7 +119,7 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
     trainer.optimiser.set_params_for_weight("l1w", stricter_clipping);
 
-    let id = "net35_1536";
+    let id = "net40_1536";
     let stage1 = TrainingSchedule {
         net_id: id.to_string() + "_stage1",
         eval_scale: 400.0,
@@ -144,7 +142,7 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: s2_superbatches,
         },
-        wdl_scheduler: linear_wdl(0.80, 0.80),
+        wdl_scheduler: linear_wdl(1.0, 1.0),
         lr_scheduler: cosine_lr(s2_superbatches, final_lr, final_lr / 20.),
         save_rate: 10,
     };
@@ -166,6 +164,7 @@ fn main() {
     };
 
     trainer.run(&stage1, &settings, &dataloader(dataset_path));
+    // trainer.load_from_checkpoint("checkpoints/net35_1536_stage1-400");
     trainer.run(&stage2, &settings, &dataloader(dataset_path));
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
