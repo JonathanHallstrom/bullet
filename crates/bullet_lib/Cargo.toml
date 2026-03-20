@@ -114,3 +114,19 @@ path = "../../examples/kirill.rs"
 [[example]]
 name = "aether"
 path = "../../examples/aether.rs"
+
+[[example]]
+name = "quant_small"
+path = "../../examples/quant_small.rs"
+
+[[example]]
+name = "pawnocchio_multilayer"
+path = "../../examples/pawnocchio_multilayer.rs"
+
+[[example]]
+name = "pawnocchio_chonker"
+path = "../../examples/pawnocchio_chonker.rs"
+
+[[example]]
+name = "eleanor"
+path = "../../examples/eleanor.rs"
