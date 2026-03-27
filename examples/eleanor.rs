@@ -21,7 +21,7 @@ fn main() {
     let superbatches_s2 = 200;
     let initial_wdl_s1 = 0.3;
     let final_wdl_s1 = 0.3;
-    let wdl_constant_s2 = 0.8;
+    let wdl_constant_s2 = 0.7;
 
     const NUM_OUTPUT_BUCKETS: usize = 8;
 
@@ -51,7 +51,7 @@ fn main() {
             l1.forward(hidden_layer).select(output_buckets)
         });
 
-    let net_id = "eleanor4_1536hl";
+    let net_id = "eleanor6_1536hl";
     let schedule_s1 = TrainingSchedule {
         net_id: net_id.to_string() + "_stage1",
         eval_scale: 400.0,
@@ -92,7 +92,7 @@ fn main() {
     let dataloader =
         loader::ViriBinpackLoader::new(dataset_path, 1024 * 8, 24, viriformat::dataformat::Filter::default());
 
-    trainer.run(&schedule_s1, &settings, &dataloader);
-    // trainer.load_from_checkpoint("checkpoints/eleanor_1536hl_stage1-600/");
+    // trainer.run(&schedule_s1, &settings, &dataloader);
+    trainer.load_from_checkpoint("checkpoints/eleanor_1536hl_stage1-600/");
     trainer.run(&schedule_s2, &settings, &dataloader);
 }

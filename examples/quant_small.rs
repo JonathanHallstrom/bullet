@@ -24,7 +24,7 @@ fn main() {
     // hyperparams to fiddle with
     let L1_SIZE = 1536;
     let L2_SIZE = 16;
-    let dataset_path = "/k4/quant_data/net26_net29_net34_net38data_shuffled.binpack";
+    let dataset_path = "/k4/quant_data/net29_net34_net38data.binpack";
     let initial_lr = 1e-3;
     let final_lr = 1e-3 * 0.3f32.powi(4);
     let s1_superbatches = 400;
@@ -119,7 +119,7 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
     trainer.optimiser.set_params_for_weight("l1w", stricter_clipping);
 
-    let id = "net40_1536";
+    let id = "net43_1536";
     let stage1 = TrainingSchedule {
         net_id: id.to_string() + "_stage1",
         eval_scale: 400.0,

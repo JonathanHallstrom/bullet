@@ -13,9 +13,13 @@ use bullet_lib::{
             TrainingDataEntry,
             chess::{r#move::MoveType, piecetype::PieceType},
         },
-        inputs, outputs,
+        inputs::{self, get_num_buckets},
+        outputs,
     },
-    nn::optimiser::{self, AdamWParams},
+    nn::{
+        InitSettings, Shape,
+        optimiser::{self, AdamWParams},
+    },
     trainer::{
         save::SavedFormat,
         schedule::{TrainingSchedule, TrainingSteps, lr, wdl},
@@ -27,7 +31,7 @@ use bullet_lib::{
     },
 };
 
-const L1: usize = 2048;
+const L1: usize = 1024;
 const L2: usize = 16;
 const L3: usize = 32;
 const SCALE: i32 = 400;
@@ -42,6 +46,20 @@ const FT_SHIFT_SCALE: f32 = Q0 as f32 / ((1 << FT_SHIFT) as f32);
 const I8_RANGE: f32 = i8::MAX as f32 / (Q1 as f32);
 const L1_RANGE: f32 = I8_RANGE * FT_SHIFT_SCALE * FT_SHIFT_SCALE;
 
+#[rustfmt::skip]
+const BUCKET_LAYOUT: [usize; 32] = [
+    0, 0, 1, 1,
+    2, 2, 2, 2,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+];
+
+const INPUT_BUCKETS: usize = get_num_buckets(&BUCKET_LAYOUT);
+
 fn main() {
     let mut trainer = ValueTrainerBuilder::default()
         // makes `ntm_inputs` available below
@@ -50,10 +68,13 @@ fn main() {
         // the default AdamW params include clipping to range [-1.98, 1.98]
         .optimiser(optimiser::AdamW)
         // basic piece-square chessboard inputs
-        .inputs(inputs::ChessBucketsMirrored::default())
+        .inputs(inputs::ChessBucketsMirrored::new(BUCKET_LAYOUT))
         .output_buckets(outputs::MaterialCount::<OUTPUT_BUCKETS>)
         .save_format(&[
-            SavedFormat::id("l0w").round().quantise::<i16>(Q0),
+            SavedFormat::id("l0w").transform(|store, weights| {
+                let factoriser = store.get("l0f").values.repeat(INPUT_BUCKETS);
+                weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
+            }),
             SavedFormat::id("l0b").round().quantise::<i16>(Q0),
             SavedFormat::id("l1w")
                 .transform(|_, mut weights| {
@@ -76,20 +97,26 @@ fn main() {
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
         // the basic `(768 -> N)x2 -> 1` inference
         .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
+            // factorizer
+            let l0f = builder.new_weights("l0f", Shape::new(L1, 768), InitSettings::Zeroed);
+            let expanded_factoriser = l0f.repeat(INPUT_BUCKETS);
+
             // weights
-            let l0 = builder.new_affine("l0", 768, L1);
-            let l1 = builder.new_affine("l1", L1 * 2, OUTPUT_BUCKETS * L2);
-            let l2 = builder.new_affine("l2", L2, OUTPUT_BUCKETS * L3);
+            let mut l0 = builder.new_affine("l0", 768 * INPUT_BUCKETS, L1);
+            l0.weights = l0.weights + expanded_factoriser;
+
+            let l1 = builder.new_affine("l1", L1, OUTPUT_BUCKETS * L2);
+            let l2 = builder.new_affine("l2", L2 * 2, OUTPUT_BUCKETS * L3);
             let l3 = builder.new_affine("l3", L3, OUTPUT_BUCKETS);
 
             // inference
-            let stm_hidden = l0.forward(stm_inputs).screlu();
-            let ntm_hidden = l0.forward(ntm_inputs).screlu();
+            let stm_hidden = l0.forward(stm_inputs).crelu().pairwise_mul();
+            let ntm_hidden = l0.forward(ntm_inputs).crelu().pairwise_mul();
             let hl1 = stm_hidden.concat(ntm_hidden);
 
             let l1_out = l1.forward(hl1).select(output_buckets);
-            // let hl2 = l1_out.concat(l1_out.abs_pow(2.0)).crelu();
-            let hl2 = l1_out.screlu();
+            let hl2 = l1_out.concat(l1_out.abs_pow(2.0)).crelu();
+            // let hl2 = l1_out.screlu();
 
             let l2_out = l2.forward(hl2).select(output_buckets);
             let hl3 = l2_out.crelu();
@@ -97,11 +124,15 @@ fn main() {
             let l3_out = l3.forward(hl3).select(output_buckets);
             l3_out
         });
+    let l0_clip = AdamWParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
+    trainer.optimiser.set_params_for_weight("l0w", l0_clip);
+    trainer.optimiser.set_params_for_weight("l0f", l0_clip);
+
     let l1_clip = AdamWParams { max_weight: L1_RANGE, min_weight: -L1_RANGE, ..Default::default() };
     trainer.optimiser.set_params_for_weight("l1w", l1_clip);
 
     let schedule = TrainingSchedule {
-        net_id: "kirill_512_multi".to_string(),
+        net_id: "kirill_1024_pw_ib".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
             batch_size: 16_384 * 8,
@@ -116,7 +147,7 @@ fn main() {
             final_superbatch: SUPERBATCHES,
         },
 
-        save_rate: 1,
+        save_rate: 100,
     };
 
     let settings = LocalSettings { threads: 16, test_set: None, output_directory: "checkpoints", batch_queue_size: 64 };
@@ -124,7 +155,7 @@ fn main() {
     // loading from a SF binpack
 
     let data_loader = {
-        let file_path = "/k4/kirill_data/2026_02_08/simple_chess_engine3.vf";
+        let file_path = "/k4/kirill_data/2026_03_23/combined.vf";
         let buffer_size_mb = 8192;
         let threads = 16;
         ViriBinpackLoader::new(file_path, buffer_size_mb, threads, viriformat::dataformat::Filter::default())
