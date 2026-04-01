@@ -25,8 +25,9 @@ use viriformat::{
 
 type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
-const NET_NAME: &'static str = "pawnocchio_chonked7";
+const NET_NAME: &'static str = "pawnocchio_pretrain";
 
+const SUPERBATCHES_STAGE0: usize = 500;
 const SUPERBATCHES_STAGE1: usize = 800;
 const SUPERBATCHES_STAGE2: usize = 200;
 const L1: usize = 2048;
@@ -155,7 +156,6 @@ fn main() {
 
             // input layer weights
             let mut l0 = builder.new_affine("l0", 768 * INPUT_BUCKETS, L1);
-            l0.init_with_effective_input_size(32);
             l0.weights = l0.weights + expanded_factoriser;
 
             // output layer weights
@@ -192,6 +192,22 @@ fn main() {
     let l1_clip = OptimiserParams { max_weight: L1_RANGE, min_weight: -L1_RANGE, ..Default::default() };
     trainer.optimiser.set_params_for_weight("l1w", l1_clip);
 
+    let stage0_schedule = TrainingSchedule {
+        net_id: NET_NAME.to_string() + "_stage0",
+        eval_scale: SCALE as f32,
+        steps: TrainingSteps {
+            batch_size: 16_384 * 8,
+            batches_per_superbatch: 6104 / 8,
+            start_superbatch: 1,
+            end_superbatch: SUPERBATCHES_STAGE1,
+        },
+        wdl_scheduler: wdl::ConstantWDL { value: 0.2 },
+        lr_scheduler: lr::Warmup {
+            inner: lr::LinearDecayLR { initial_lr: 5e-3, final_lr: 1e-4, final_superbatch: SUPERBATCHES_STAGE0 },
+            warmup_batches: 200,
+        },
+        save_rate: 100,
+    };
     let stage1_schedule = TrainingSchedule {
         net_id: NET_NAME.to_string() + "_stage1",
         eval_scale: SCALE as f32,
@@ -201,13 +217,9 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE1,
         },
-        wdl_scheduler: wdl::LinearWDL { start: 0.0, end: 0.5 },
+        wdl_scheduler: wdl::LinearWDL { start: 0.2, end: 0.5 },
         lr_scheduler: lr::Warmup {
-            inner: lr::LinearDecayLR {
-                initial_lr: 0.001,
-                final_lr: 0.001 * f32::powi(0.3, 5),
-                final_superbatch: SUPERBATCHES_STAGE1,
-            },
+            inner: lr::LinearDecayLR { initial_lr: 1e-3, final_lr: 1e-6, final_superbatch: SUPERBATCHES_STAGE1 },
             warmup_batches: 200,
         },
         save_rate: 100,
@@ -223,11 +235,7 @@ fn main() {
         },
         wdl_scheduler: wdl::ConstantWDL { value: 1.0 },
         lr_scheduler: lr::Warmup {
-            inner: lr::ExponentialDecayLR {
-                initial_lr: 0.001 * f32::powi(0.3, 5),
-                final_lr: 0.001 * f32::powi(0.3, 7),
-                final_superbatch: SUPERBATCHES_STAGE2,
-            },
+            inner: lr::LinearDecayLR { initial_lr: 1e-5, final_lr: 1e-7, final_superbatch: SUPERBATCHES_STAGE2 },
             warmup_batches: 200,
         },
         save_rate: 100,
@@ -238,6 +246,12 @@ fn main() {
 
     let binpack_dataset = "/k4/vine_data/vine_37/mixed_data_chonked.vf";
 
+    trainer.run(
+        &stage0_schedule,
+        &settings,
+        &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
+    );
+    // trainer.load_from_checkpoint("checkpoints/pawnocchio_2048_dualact_pretrain/");
     trainer.run(
         &stage1_schedule,
         &settings,
