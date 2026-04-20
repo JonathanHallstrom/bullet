@@ -85,6 +85,7 @@ fn piece_count_acceptance(board: &Board) -> f64 {
     let acceptance = 0.5 * DESIRED_DISTRIBUTION[pc] / frequency;
     acceptance.clamp(0., 1.)
 }
+
 fn filter(board: &Board, mv: Move, eval: i16, wdl: f32) -> bool {
     let default_viri_filter = Filter {
         min_ply: 16,
@@ -120,6 +121,15 @@ fn main() {
         .inputs(ChessBucketsMirrored::new(BUCKET_LAYOUT))
         .output_buckets(MaterialCount::<OUTPUT_BUCKETS>)
         .save_format(&[
+            // SavedFormat::id("l0f"),
+            // SavedFormat::id("l0w"),
+            // SavedFormat::id("l0b"),
+            // SavedFormat::id("l1w"),
+            // SavedFormat::id("l1b"),
+            // SavedFormat::id("l2w"),
+            // SavedFormat::id("l2b"),
+            // SavedFormat::id("l3w"),
+            // SavedFormat::id("l3b"),
             SavedFormat::id("l0w")
                 .transform(|builder, mut weights| {
                     let factoriser = builder.get("l0f").values;
@@ -143,7 +153,7 @@ fn main() {
                 })
                 .round()
                 .quantise::<i8>(Q1),
-            SavedFormat::id("l1b").round().quantise::<i32>(Q as i32 * 256),
+            SavedFormat::id("l1b").round().quantise::<i32>(Q as i32),
             SavedFormat::id("l2w").round().quantise::<i32>(Q as i32),
             SavedFormat::id("l2b").round().quantise::<i32>((Q as i32).pow(3)),
             SavedFormat::id("l3w").round().quantise::<i32>(Q as i32),
@@ -246,25 +256,25 @@ fn main() {
 
     let binpack_dataset = "/k4/vine_data/vine_37/mixed_data_chonked.vf";
 
-    trainer.run(
-        &stage0_schedule,
-        &settings,
-        &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
-    );
-    // trainer.load_from_checkpoint("checkpoints/pawnocchio_2048_dualact_pretrain/");
-    trainer.run(
-        &stage1_schedule,
-        &settings,
-        &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
-    );
-    trainer.run(
-        &stage2_schedule,
-        &settings,
-        &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
-    );
+    // trainer.run(
+    //     &stage0_schedule,
+    //     &settings,
+    //     &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
+    // );
+    // // trainer.load_from_checkpoint("checkpoints/pawnocchio_2048_dualact_pretrain/");
+    // trainer.run(
+    //     &stage1_schedule,
+    //     &settings,
+    //     &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
+    // );
+    // trainer.run(
+    //     &stage2_schedule,
+    //     &settings,
+    //     &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
+    // );
 
-    // trainer.load_from_checkpoint("checkpoints/pawnocchio_multilayer_2048_2_stage1-1");
-    // trainer.save_to_checkpoint("checkpoints/pawnocchio_multilayer_2048_stage2-200_requantise");
+    trainer.load_from_checkpoint("checkpoints/pawnocchio_pretrain_stage2-200/");
+    trainer.save_to_checkpoint("checkpoints/pawnocchio_pretrain_stage2-200_kiri/");
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",

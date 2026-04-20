@@ -1,6 +1,5 @@
 use acyclib::graph::builder::GraphBuilderNode;
 use bullet_cuda_backend::CudaMarker;
-use std::u32;
 
 use bullet_lib::{
     game::inputs::{self},
@@ -227,12 +226,12 @@ fn main() {
         });
 
     let schedule = TrainingSchedule {
-        net_id: "vine_59_test1".to_string(),
+        net_id: "vine_59_test2".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
             batch_size: 16_384 * 4,
             batches_per_superbatch: 6104 / 4,
-            start_superbatch: 2101,
+            start_superbatch: 1,
             end_superbatch: SUPERBATCHES,
         },
         wdl_scheduler: wdl::Warmup { inner: wdl::ConstantWDL { value: 1.0 }, warmup_batches: 2000 },
@@ -244,7 +243,7 @@ fn main() {
             },
             warmup_batches: 2000,
         },
-        save_rate: 100,
+        save_rate: 10,
     };
 
     let settings =
@@ -275,7 +274,7 @@ fn main() {
         },
     );
 
-    trainer.load_from_checkpoint("checkpoints/vine_59_test1-2100");
+    // trainer.load_from_checkpoint("checkpoints/vine_59_test1-2100");
     trainer.run(&schedule, &settings, &data_loader);
 
     for fen in [

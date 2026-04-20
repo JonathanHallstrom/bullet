@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use bullet_lib::{
     game::{
         inputs::{ChessBucketsMirrored, get_num_buckets},
@@ -12,19 +14,79 @@ use bullet_lib::{
         schedule::{TrainingSchedule, TrainingSteps, lr, wdl},
         settings::LocalSettings,
     },
-    value::{ValueTrainerBuilder, loader::DirectSequentialDataLoader},
+    value::{
+        ValueTrainerBuilder,
+        loader::{ViriBinpackLoader, viribinpack::ViriFilter},
+    },
 };
 
-use bullet_lib::value::loader::SfBinpackLoader;
-use sfbinpack::TrainingDataEntry;
-use sfbinpack::chess::r#move::MoveType;
-use sfbinpack::chess::piecetype::PieceType;
+use bytemuck::zeroed;
+use rand::{Rng, rng};
+use viriformat::{
+    chess::{board::Board, chessmove::Move},
+    dataformat::WDL,
+};
+
+fn piece_count_acceptance(board: &Board) -> f64 {
+    #[rustfmt::skip]
+    const DESIRED_DISTRIBUTION: [f64; 33] = [
+        0.018411966423, 0.020641545085, 0.022727271053,
+        0.024669162740, 0.026467201733, 0.028121406444,
+        0.029631758462, 0.030998276198, 0.032220941240,
+        0.033299772000, 0.034234750067, 0.035025893853,
+        0.035673184944, 0.036176641754, 0.036536245870,
+        0.036752015705, 0.036823932846, 0.036752015705,
+        0.036536245870, 0.036176641754, 0.035673184944,
+        0.035025893853, 0.034234750067, 0.033299772000,
+        0.032220941240, 0.030998276198, 0.029631758462,
+        0.028121406444, 0.026467201733, 0.024669162740,
+        0.022727271053, 0.020641545085, 0.018411966423,
+    ];
+
+    static PIECE_COUNT_STATS: [AtomicU64; 33] = zeroed();
+    static PIECE_COUNT_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+    let pc = board.pieces.occupied().count() as usize;
+    let count = PIECE_COUNT_STATS[pc].fetch_add(1, Ordering::Relaxed) + 1;
+    let total = PIECE_COUNT_TOTAL.fetch_add(1, Ordering::Relaxed) + 1;
+    let frequency = count as f64 / total as f64;
+
+    // Calculate the acceptance probability for this piece count
+    let acceptance = 0.5 * DESIRED_DISTRIBUTION[pc] / frequency;
+    acceptance.clamp(0., 1.)
+}
+
+fn filter(board: &Board, mv: Move, eval: i16, wdl: f32) -> bool {
+    let default_viri_filter = viriformat::dataformat::Filter {
+        min_pieces: 4,
+        min_ply: 16,
+        max_eval: 16000,
+        filter_check: true,
+        filter_tactical: true,
+        filter_castling: true,
+        random_fen_skipping: true,
+        random_fen_skip_probability: 0.15,
+        ..Default::default()
+    };
+
+    let mut rng = rng();
+    let wdl = match wdl {
+        1.0 => WDL::Win,
+        0.5 => WDL::Draw,
+        0.0 => WDL::Loss,
+        _ => unreachable!(),
+    };
+
+    !default_viri_filter.should_filter(mv, eval as i32, board, wdl, &mut rng)
+    // && rng.random_bool(piece_count_acceptance(board))
+}
 
 fn main() {
     // hyperparams to fiddle with
     let L1_SIZE = 1536;
     let L2_SIZE = 16;
-    let dataset_path = "/k4/quant_data/net39_data.binpack";
+    // let dataset_path = "/k4/quant_data/net39_data.binpack";
+    let dataset_path = "/k4/quant_data/vf/net39.vf";
     let initial_lr = 1e-3;
     let final_lr = 1e-3 * 0.3f32.powi(4);
     let s1_superbatches = 400;
@@ -119,13 +181,13 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
     trainer.optimiser.set_params_for_weight("l1w", stricter_clipping);
 
-    let id = "net44_1536";
+    let id = "net50_1536";
     let stage1 = TrainingSchedule {
         net_id: id.to_string() + "_stage1",
         eval_scale: 400.0,
         steps: TrainingSteps {
-            batch_size: 16_384,
-            batches_per_superbatch: 6104,
+            batch_size: 16_384 * 8,
+            batches_per_superbatch: 6104 / 8,
             start_superbatch: 1,
             end_superbatch: s1_superbatches,
         },
@@ -137,8 +199,8 @@ fn main() {
         net_id: id.to_string() + "_stage2",
         eval_scale: 400.0,
         steps: TrainingSteps {
-            batch_size: 16_384,
-            batches_per_superbatch: 6104,
+            batch_size: 16_384 * 8,
+            batches_per_superbatch: 6104 / 8,
             start_superbatch: 1,
             end_superbatch: s2_superbatches,
         },
@@ -152,15 +214,16 @@ fn main() {
     let dataloader = |path| {
         let buffer_size_mb = 16384;
         let threads = 16;
-        fn filter(entry: &TrainingDataEntry) -> bool {
-            entry.ply >= 16
-                && !entry.pos.is_checked(entry.pos.side_to_move())
-                && entry.score.unsigned_abs() <= 16000
-                && entry.mv.mtype() == MoveType::Normal
-                && entry.pos.piece_at(entry.mv.to()).piece_type() == PieceType::None
-        }
-
-        SfBinpackLoader::new(path, buffer_size_mb, threads, filter)
+        // fn filter(entry: &TrainingDataEntry) -> bool {
+        //     entry.ply >= 16
+        //         && !entry.pos.is_checked(entry.pos.side_to_move())
+        //         && entry.score.unsigned_abs() <= 16000
+        //         && entry.mv.mtype() == MoveType::Normal
+        //         && entry.pos.piece_at(entry.mv.to()).piece_type() == PieceType::None
+        // }
+        //
+        // SfBinpackLoader::new(path, buffer_size_mb, threads, filter)
+        ViriBinpackLoader::new(path, buffer_size_mb, threads, ViriFilter::Custom(filter))
     };
 
     trainer.run(&stage1, &settings, &dataloader(dataset_path));

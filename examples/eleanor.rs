@@ -1,6 +1,12 @@
 use bullet_lib::{
-    game::{inputs::ChessBucketsMirrored, outputs::MaterialCount},
-    nn::optimiser::AdamW,
+    game::{
+        inputs::{ChessBucketsMirrored, get_num_buckets},
+        outputs::MaterialCount,
+    },
+    nn::{
+        InitSettings, Shape,
+        optimiser::{AdamW, AdamWParams},
+    },
     trainer::{
         save::SavedFormat,
         schedule::{TrainingSchedule, TrainingSteps, lr, wdl},
@@ -12,36 +18,66 @@ use bullet_lib::{
 fn main() {
     // hyperparams to fiddle with
     let hl_size = 1536;
-    let dataset_path = "/k4/eleanor_data/2026_03_14/combined.binpack";
+    let dataset_path = "/k4/eleanor_data/2026_04_08/combined.binpack";
     let initial_lr_s1 = 0.001 * 0.3f32.powi(0);
     let final_lr_s1 = 0.001 * 0.3f32.powi(7);
     let initial_lr_s2 = 0.001 * 0.3f32.powi(4);
     let final_lr_s2 = 0.001 * 0.3f32.powi(8);
     let superbatches_s1 = 600;
     let superbatches_s2 = 200;
-    let initial_wdl_s1 = 0.3;
-    let final_wdl_s1 = 0.3;
-    let wdl_constant_s2 = 0.7;
+    let initial_wdl_s1 = 0.2;
+    let final_wdl_s1 = 0.4;
+    let wdl_constant_s2 = 0.8;
+
+    #[rustfmt::skip]
+    const BUCKET_LAYOUT: [usize; 32] = [
+        0, 0, 1, 1,
+        2, 2, 3, 3,
+        4, 4, 4, 4,
+        4, 4, 4, 4,
+        4, 4, 4, 4,
+        5, 5, 5, 5,
+        5, 5, 5, 5,
+        5, 5, 5, 5
+    ];
+
+    const NUM_INPUT_BUCKETS: usize = get_num_buckets(&BUCKET_LAYOUT);
 
     const NUM_OUTPUT_BUCKETS: usize = 8;
 
     let mut trainer = ValueTrainerBuilder::default()
         .dual_perspective()
         .optimiser(AdamW)
-        .inputs(ChessBucketsMirrored::default())
+        .inputs(ChessBucketsMirrored::new(BUCKET_LAYOUT))
         .output_buckets(MaterialCount::<NUM_OUTPUT_BUCKETS>)
         .save_format(&[
-            SavedFormat::id("l0w").quantise::<i16>(255),
-            SavedFormat::id("l0b").quantise::<i16>(255),
+            // merge in the factoriser weights
+            SavedFormat::id("l0w")
+                .transform(|store, weights| {
+                    let factoriser = store.get("l0f").values.repeat(NUM_INPUT_BUCKETS);
+                    weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
+                })
+                .round()
+                .quantise::<i16>(255),
+            //SavedFormat::id("l0w").round().quantise::<i16>(255),
+            SavedFormat::id("l0b").round().quantise::<i16>(255),
             // we want to save output-bucketed weights in a format
             // that is suitable for fast cpu inference
-            SavedFormat::id("l1w").quantise::<i16>(64).transpose(),
-            SavedFormat::id("l1b").quantise::<i16>(255 * 64),
+            SavedFormat::id("l1w").round().quantise::<i16>(64).transpose(),
+            SavedFormat::id("l1b").round().quantise::<i16>(255 * 64),
         ])
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
         .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
-            // weights
-            let l0 = builder.new_affine("l0", 768, hl_size);
+            // input layer factoriser
+            let l0f = builder.new_weights("l0f", Shape::new(hl_size, 768), InitSettings::Zeroed);
+            let expanded_factoriser = l0f.repeat(NUM_INPUT_BUCKETS);
+
+            // input layer weights
+            let mut l0 = builder.new_affine("l0", 768 * NUM_INPUT_BUCKETS, hl_size);
+            l0.weights = l0.weights + expanded_factoriser;
+            //let l0 = builder.new_affine("l0", 768, hl_size);
+
+            // output layer weights
             let l1 = builder.new_affine("l1", 2 * hl_size, NUM_OUTPUT_BUCKETS);
 
             // inference
@@ -51,7 +87,12 @@ fn main() {
             l1.forward(hidden_layer).select(output_buckets)
         });
 
-    let net_id = "eleanor6_1536hl";
+    // need to account for factoriser weight magnitudes
+    let stricter_clipping = AdamWParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
+    trainer.optimiser.set_params_for_weight("l0w", stricter_clipping);
+    trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
+
+    let net_id = "eleanor1_6_1536hl";
     let schedule_s1 = TrainingSchedule {
         net_id: net_id.to_string() + "_stage1",
         eval_scale: 400.0,
@@ -92,7 +133,6 @@ fn main() {
     let dataloader =
         loader::ViriBinpackLoader::new(dataset_path, 1024 * 8, 24, viriformat::dataformat::Filter::default());
 
-    // trainer.run(&schedule_s1, &settings, &dataloader);
-    trainer.load_from_checkpoint("checkpoints/eleanor_1536hl_stage1-600/");
+    trainer.run(&schedule_s1, &settings, &dataloader);
     trainer.run(&schedule_s2, &settings, &dataloader);
 }
