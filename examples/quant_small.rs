@@ -16,12 +16,16 @@ use bullet_lib::{
     },
     value::{
         ValueTrainerBuilder,
-        loader::{ViriBinpackLoader, viribinpack::ViriFilter},
+        loader::{SfBinpackLoader, ViriBinpackLoader, viribinpack::ViriFilter},
     },
 };
 
 use bytemuck::zeroed;
 use rand::{Rng, rng};
+use sfbinpack::{
+    TrainingDataEntry,
+    chess::{r#move::MoveType, piecetype::PieceType},
+};
 use viriformat::{
     chess::{board::Board, chessmove::Move},
     dataformat::WDL,
@@ -64,8 +68,8 @@ fn filter(board: &Board, mv: Move, eval: i16, wdl: f32) -> bool {
         filter_check: true,
         filter_tactical: true,
         filter_castling: true,
-        random_fen_skipping: true,
-        random_fen_skip_probability: 0.15,
+        random_fen_skipping: false,
+        random_fen_skip_probability: 0.,
         ..Default::default()
     };
 
@@ -86,9 +90,11 @@ fn main() {
     let L1_SIZE = 1536;
     let L2_SIZE = 16;
     // let dataset_path = "/k4/quant_data/net39_data.binpack";
-    let dataset_path = "/k4/quant_data/vf/net39.vf";
+    let dataset_path = "/k4/quant_data/net39_net44_data.binpack";
+    // let dataset_path = "/k4/quant_data/vf/net39.vf";
     let initial_lr = 1e-3;
     let final_lr = 1e-3 * 0.3f32.powi(4);
+    let s0_superbatches = 100;
     let s1_superbatches = 400;
     let s2_superbatches = 200;
     let cosine_lr = |sbs, initial_lr, final_lr| lr::CosineDecayLR { initial_lr, final_lr, final_superbatch: sbs };
@@ -137,7 +143,7 @@ fn main() {
         .output_buckets(MaterialCount::<NUM_OUTPUT_BUCKETS>)
         .save_format(&[
             SavedFormat::id("l0w").transform(|store, weights| {
-                let factoriser = store.get("l0f").values.repeat(NUM_INPUT_BUCKETS);
+                let factoriser = store.get("l0f").values.f32().repeat(NUM_INPUT_BUCKETS);
                 weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
             }),
             SavedFormat::id("l0b"),
@@ -181,7 +187,20 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
     trainer.optimiser.set_params_for_weight("l1w", stricter_clipping);
 
-    let id = "net50_1536";
+    let id = "quant_1536_pretrain";
+    let stage0 = TrainingSchedule {
+        net_id: id.to_string() + "_stage0",
+        eval_scale: 400.0,
+        steps: TrainingSteps {
+            batch_size: 16_384 * 8,
+            batches_per_superbatch: 6104 / 8,
+            start_superbatch: 1,
+            end_superbatch: s0_superbatches,
+        },
+        wdl_scheduler: linear_wdl(0.0, 0.1),
+        lr_scheduler: cosine_lr(s0_superbatches, initial_lr * 2.0, initial_lr),
+        save_rate: 10,
+    };
     let stage1 = TrainingSchedule {
         net_id: id.to_string() + "_stage1",
         eval_scale: 400.0,
@@ -214,21 +233,22 @@ fn main() {
     let dataloader = |path| {
         let buffer_size_mb = 16384;
         let threads = 16;
-        // fn filter(entry: &TrainingDataEntry) -> bool {
-        //     entry.ply >= 16
-        //         && !entry.pos.is_checked(entry.pos.side_to_move())
-        //         && entry.score.unsigned_abs() <= 16000
-        //         && entry.mv.mtype() == MoveType::Normal
-        //         && entry.pos.piece_at(entry.mv.to()).piece_type() == PieceType::None
-        // }
-        //
-        // SfBinpackLoader::new(path, buffer_size_mb, threads, filter)
-        ViriBinpackLoader::new(path, buffer_size_mb, threads, ViriFilter::Custom(filter))
+        fn filter(entry: &TrainingDataEntry) -> bool {
+            entry.ply >= 16
+                && !entry.pos.is_checked(entry.pos.side_to_move())
+                && entry.score.unsigned_abs() <= 16000
+                && entry.mv.mtype() == MoveType::Normal
+                && entry.pos.piece_at(entry.mv.to()).piece_type() == PieceType::None
+        }
+
+        SfBinpackLoader::new(path, buffer_size_mb, threads, filter)
+        // ViriBinpackLoader::new(path, buffer_size_mb, threads, ViriFilter::Custom(filter))
     };
 
+    // trainer.run(&stage0, &settings, &dataloader(dataset_path));
     trainer.run(&stage1, &settings, &dataloader(dataset_path));
-    // trainer.load_from_checkpoint("checkpoints/net35_1536_stage1-400");
     trainer.run(&stage2, &settings, &dataloader(dataset_path));
+
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",

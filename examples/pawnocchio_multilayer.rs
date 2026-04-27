@@ -132,8 +132,7 @@ fn main() {
             // SavedFormat::id("l3b"),
             SavedFormat::id("l0w")
                 .transform(|builder, mut weights| {
-                    let factoriser = builder.get("l0f").values;
-                    let expanded = factoriser.repeat(INPUT_BUCKETS);
+                    let expanded = builder.get("l0f").values.f32().repeat(INPUT_BUCKETS);
 
                     for (i, &j) in weights.iter_mut().zip(expanded.iter()) {
                         *i += j;
