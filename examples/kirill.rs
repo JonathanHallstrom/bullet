@@ -116,8 +116,8 @@ fn main() {
             let ntm_hidden = l0.forward(ntm_inputs).crelu().pairwise_mul();
             let hl1 = stm_hidden.concat(ntm_hidden);
 
-            let ones_l1_vec = builder.new_constant(Shape::new(1, L1), &[1.0 / L1 as f32; L1]);
-            let l0_out_norm = ones_l1_vec.matmul(hl1);
+            // let ones_l1_vec = builder.new_constant(Shape::new(1, L1), &[1.0 / L1 as f32; L1]);
+            // let l0_out_norm = ones_l1_vec.matmul(hl1);
 
             let l1_out = l1.forward(hl1).select(output_buckets);
             let hl2 = l1_out.concat(l1_out.abs_pow(2.0)).crelu();
@@ -129,7 +129,7 @@ fn main() {
 
             let loss = l3_out.sigmoid().squared_error(target);
 
-            let loss = loss + 0.005 * l0_out_norm;
+            // let loss = loss + 0.005 * l0_out_norm;
 
             (l3_out, loss)
         });
@@ -141,7 +141,7 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l1w", l1_clip);
 
     let schedule = TrainingSchedule {
-        net_id: "kirill_1024_pw_8ib_lin_reg".to_string(),
+        net_id: "kirill_1024_pw_8ib_lin".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
             batch_size: 16_384 * 8,
@@ -149,7 +149,7 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES,
         },
-        wdl_scheduler: wdl::ConstantWDL { value: 0.5 },
+        wdl_scheduler: wdl::LinearWDL { start: 0.3, end: 0.7 },
         lr_scheduler: lr::CosineDecayLR {
             initial_lr: 1e-3,
             final_lr: 1e-3 * 0.3f32.powi(5),
