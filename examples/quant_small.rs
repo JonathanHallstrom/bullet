@@ -187,7 +187,7 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
     trainer.optimiser.set_params_for_weight("l1w", stricter_clipping);
 
-    let id = "quant_1536_pretrain";
+    let id = "quant_net56_1536";
     let stage0 = TrainingSchedule {
         net_id: id.to_string() + "_stage0",
         eval_scale: 400.0,
@@ -199,33 +199,33 @@ fn main() {
         },
         wdl_scheduler: linear_wdl(0.0, 0.1),
         lr_scheduler: cosine_lr(s0_superbatches, initial_lr * 2.0, initial_lr),
-        save_rate: 10,
+        save_rate: 100,
     };
     let stage1 = TrainingSchedule {
         net_id: id.to_string() + "_stage1",
         eval_scale: 400.0,
         steps: TrainingSteps {
-            batch_size: 16_384 * 8,
-            batches_per_superbatch: 6104 / 8,
+            batch_size: 16_384,
+            batches_per_superbatch: 6104,
             start_superbatch: 1,
             end_superbatch: s1_superbatches,
         },
         wdl_scheduler: linear_wdl(0.25, 0.75),
         lr_scheduler: cosine_lr(s1_superbatches, initial_lr, final_lr),
-        save_rate: 10,
+        save_rate: 100,
     };
     let stage2 = TrainingSchedule {
         net_id: id.to_string() + "_stage2",
         eval_scale: 400.0,
         steps: TrainingSteps {
-            batch_size: 16_384 * 8,
-            batches_per_superbatch: 6104 / 8,
+            batch_size: 16_384,
+            batches_per_superbatch: 6104,
             start_superbatch: 1,
             end_superbatch: s2_superbatches,
         },
         wdl_scheduler: linear_wdl(1.0, 1.0),
         lr_scheduler: cosine_lr(s2_superbatches, final_lr, final_lr / 20.),
-        save_rate: 10,
+        save_rate: 100,
     };
 
     let settings = LocalSettings { threads: 8, test_set: None, output_directory: "checkpoints", batch_queue_size: 128 };
