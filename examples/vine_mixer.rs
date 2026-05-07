@@ -1,6 +1,8 @@
+use std::u32;
+
 use bullet_lib::{
     game::inputs::{self},
-    nn::{ModelNode, Shape, optimiser},
+    nn::{InitSettings, ModelNode, Shape, optimiser},
     trainer::{
         save::SavedFormat,
         schedule::{TrainingSchedule, TrainingSteps, lr, wdl},
@@ -29,7 +31,6 @@ impl inputs::SparseInputType for ThreatInputs {
     fn num_inputs(&self) -> usize {
         return 3072;
     }
-
     fn max_active(&self) -> usize {
         return 32;
     }
@@ -73,7 +74,6 @@ impl inputs::SparseInputType for ThreatInputs {
     fn shorthand(&self) -> String {
         return "3072".to_owned();
     }
-
     fn description(&self) -> String {
         return "SuperSimpleThreats".to_owned();
     }
@@ -89,7 +89,6 @@ fn flip_horizontal(mut bb: u64) -> u64 {
 }
 
 fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
-    // horiontal mirror
     let ksq = (bbs[0] & bbs[Piece::KING]).trailing_zeros();
     if ksq % 8 > 3 {
         for bb in bbs.iter_mut() {
@@ -106,9 +105,7 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
     }
 
     let occ = bbs[0] | bbs[1];
-
     let mut threats: [u64; 2] = [0; 2];
-
     let mut pinned: [u64; 2] = [0; 2];
 
     for side in [Side::WHITE, Side::BLACK] {
@@ -146,7 +143,6 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
                 if pinned[side] & 1 << sq != 0 {
                     cur_threats &= IN_BETWEEN[our_king_idx][sq];
                 }
-
                 threats[side] |= cur_threats;
             });
         }
@@ -156,16 +152,13 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
         for piece in Piece::PAWN..=Piece::KING {
             map_bb(bbs[side] & bbs[piece], |sq| {
                 let mut feat = [0, 384][side] + 64 * (piece - 2) + sq;
-
                 let bit = 1 << sq;
                 if threats[side ^ 1] & bit > 0 {
                     feat += 768;
                 }
-
                 if threats[side] & bit > 0 {
                     feat += 768 * 2;
                 }
-
                 f(feat);
             });
         }
@@ -173,61 +166,66 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
 }
 
 const SUPERBATCHES: usize = 3000;
-const L1: usize = 4096;
-const L2: usize = 16;
-const L3: usize = 128;
+const DIM_GRAIN: usize = 16;
+const MIXER_D1: usize = 1 * DIM_GRAIN;
+const MIXER_D2: usize = 16 * DIM_GRAIN;
+const L1: usize = MIXER_D1 * MIXER_D2;
 const SCALE: i32 = 400;
 const QA: i16 = 255;
-const QB: i16 = 64;
 
 fn main() {
     let mut trainer = ValueTrainerBuilder::default()
-        // makes `ntm_inputs` not available below
         .single_perspective()
-        // standard optimiser used in NNUE
-        // the default AdamW params include clipping to range [-1.98, 1.98]
         .optimiser(optimiser::AdamW)
-        // super simple threat inputs
         .inputs(ThreatInputs::default())
-        // chosen such that inference may be efficiently implemented in-engine
         .save_format(&[
             SavedFormat::id("l0w").round().quantise::<i16>(QA),
             SavedFormat::id("l0b").round().quantise::<i16>(QA),
-            SavedFormat::id("l1w").round().quantise::<i8>(QB),
-            SavedFormat::id("l1b"),
-            SavedFormat::id("l2w"),
-            SavedFormat::id("l2b"),
-            SavedFormat::id("l3w"),
-            SavedFormat::id("l3b"),
+            SavedFormat::id("wl1"),
+            SavedFormat::id("wr1"),
+            SavedFormat::id("wl2"),
+            SavedFormat::id("wr2"),
+            SavedFormat::id("v_headw"),
+            SavedFormat::id("v_headb"),
         ])
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
         .build(|builder, stm_inputs| {
-            // weights
             let l0 = builder.new_affine("l0", 3072, L1);
-            let l1 = builder.new_affine("l1", L1 / 2, L2);
-            let l2 = builder.new_affine("l2", L2, L3 * 2);
-            let l3 = builder.new_affine("l3", L3, 1);
+            let x_flat = l0.forward(stm_inputs).crelu();
 
-            fn hardswish6<'a>(x: ModelNode<'a>) -> ModelNode<'a> {
-                (x * (1.0 / 6.0) + 0.5).crelu()
-            }
+            let mut x = x_flat.reshape(Shape::new(MIXER_D1, MIXER_D2));
 
-            let hl1 = l0.forward(stm_inputs).crelu().pairwise_mul();
-            let l1_out = l1.forward(hl1);
+            let mixer_init_d1 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_D1 as f32).sqrt() };
+            let mixer_init_d2 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_D2 as f32).sqrt() };
 
-            let hl2 = l1_out * hardswish6(l1_out);
-            let l2_out = l2.forward(hl2);
+            let wl1 = builder.new_weights("wl1", Shape::new(MIXER_D1, MIXER_D1), mixer_init_d1);
+            let left_mix = wl1.broadcast_across_batch().matmul(x).crelu();
+            x = x + left_mix;
 
-            let hl3 = l2_out.slice_rows(0, L3) * hardswish6(l2_out.slice_rows(L3, 2 * L3));
-            l3.forward(hl3)
+            let wr1 = builder.new_weights("wr1", Shape::new(MIXER_D2, MIXER_D2), mixer_init_d2);
+            let right_mix = x.matmul(wr1.broadcast_across_batch()).crelu();
+            x = x + right_mix;
+
+            let wl2 = builder.new_weights("wl2", Shape::new(MIXER_D1, MIXER_D1), mixer_init_d1);
+            let left_mix_2 = wl2.broadcast_across_batch().matmul(x).crelu();
+            x = x + left_mix_2;
+
+            let wr2 = builder.new_weights("wr2", Shape::new(MIXER_D2, MIXER_D2), mixer_init_d2);
+            let right_mix_2 = x.matmul(wr2.broadcast_across_batch()).crelu();
+            x = x + right_mix_2;
+
+            let x_final = x.reshape(Shape::new(L1, 1));
+
+            let v_head = builder.new_affine("v_head", L1, 1);
+            v_head.forward(x_final)
         });
 
     let schedule = TrainingSchedule {
-        net_id: "vine_59_test2".to_string(),
+        net_id: "vine_mixer_64x64".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
-            batch_size: 16_384 * 4,
-            batches_per_superbatch: 6104 / 4,
+            batch_size: 16_384,
+            batches_per_superbatch: 6104,
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES,
         },
@@ -240,7 +238,7 @@ fn main() {
             },
             warmup_batches: 2000,
         },
-        save_rate: 10,
+        save_rate: 100,
     };
 
     let settings =
@@ -248,7 +246,6 @@ fn main() {
 
     let data_loader = loader::ViriBinpackLoader::new(
         "/k4/vine_data/vine_43/vine_43_adj.vf",
-        // "/k4/vine_data/vine_37/vine_42_adj.vf",
         16384,
         16,
         Filter {
@@ -271,7 +268,6 @@ fn main() {
         },
     );
 
-    // trainer.load_from_checkpoint("checkpoints/vine_59_test1-2100");
     trainer.run(&schedule, &settings, &data_loader);
 
     for fen in [
@@ -288,7 +284,6 @@ fn main() {
         "r1bqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "1nbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQka - 0 1",
     ] {
-        // let eval = -400.0 * (1.0 / trainer.eval(fen) - 1.0).ln();
         let eval = 400.0 * trainer.eval(fen);
         println!("FEN: {fen}");
         println!("EVAL: {}", eval);

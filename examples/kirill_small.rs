@@ -101,7 +101,8 @@ fn main() {
         ViriBinpackLoader::new(file_path, buffer_size_mb, threads, viriformat::dataformat::Filter::default())
     };
 
-    trainer.run(&schedule, &settings, &data_loader);
+    trainer.load_from_checkpoint(("checkpoints/kirill_small-100/"));
+    // trainer.run(&schedule, &settings, &data_loader);
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",

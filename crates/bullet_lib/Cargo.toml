@@ -135,3 +135,7 @@ path = "../../examples/yukari-fti.rs"
 [[example]]
 name = "sti"
 path = "../../examples/yukari-sti.rs"
+
+[[example]]
+name = "vine_mixer"
+path = "../../examples/vine_mixer.rs"
