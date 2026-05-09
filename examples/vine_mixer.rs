@@ -2,7 +2,7 @@ use std::u32;
 
 use bullet_lib::{
     game::inputs::{self},
-    nn::{InitSettings, ModelNode, Shape, optimiser},
+    nn::{InitSettings, Shape, optimiser},
     trainer::{
         save::SavedFormat,
         schedule::{TrainingSchedule, TrainingSteps, lr, wdl},
@@ -10,6 +10,7 @@ use bullet_lib::{
     },
     value::{ValueTrainerBuilder, loader},
 };
+
 use bulletformat::ChessBoard;
 use montyformat::chess::{Attacks, Piece, Side, consts::IN_BETWEEN};
 use viriformat::dataformat::Filter;
@@ -169,25 +170,30 @@ const SUPERBATCHES: usize = 3000;
 const DIM_GRAIN: usize = 16;
 const MIXER_D1: usize = 1 * DIM_GRAIN;
 const MIXER_D2: usize = 16 * DIM_GRAIN;
+const MIXER_UP1: usize = MIXER_D1;
+const MIXER_UP2: usize = MIXER_D2;
+const NUM_LAYERS: usize = 2;
 const L1: usize = MIXER_D1 * MIXER_D2;
 const SCALE: i32 = 400;
 const QA: i16 = 255;
 
 fn main() {
+    let mut save_format =
+        vec![SavedFormat::id("l0w").round().quantise::<i16>(QA), SavedFormat::id("l0b").round().quantise::<i16>(QA)];
+
+    for i in 1..=NUM_LAYERS {
+        save_format.push(SavedFormat::id(format!("wl{i}_up")));
+        save_format.push(SavedFormat::id(format!("wl{i}_down")));
+        save_format.push(SavedFormat::id(format!("wr{i}_up")));
+        save_format.push(SavedFormat::id(format!("wr{i}_down")));
+    }
+    save_format.append(vec![SavedFormat::id("value_headw"), SavedFormat::id("value_headb")]);
+
     let mut trainer = ValueTrainerBuilder::default()
         .single_perspective()
         .optimiser(optimiser::AdamW)
         .inputs(ThreatInputs::default())
-        .save_format(&[
-            SavedFormat::id("l0w").round().quantise::<i16>(QA),
-            SavedFormat::id("l0b").round().quantise::<i16>(QA),
-            SavedFormat::id("wl1"),
-            SavedFormat::id("wr1"),
-            SavedFormat::id("wl2"),
-            SavedFormat::id("wr2"),
-            SavedFormat::id("v_headw"),
-            SavedFormat::id("v_headb"),
-        ])
+        .save_format(&save_format)
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
         .build(|builder, stm_inputs| {
             let l0 = builder.new_affine("l0", 3072, L1);
@@ -195,28 +201,26 @@ fn main() {
 
             let mut x = x_flat.reshape(Shape::new(MIXER_D1, MIXER_D2));
 
-            let mixer_init_d1 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_D1 as f32).sqrt() };
-            let mixer_init_d2 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_D2 as f32).sqrt() };
+            let init_up_d1 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_D1 as f32).sqrt() };
+            let init_down_d1 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_UP1 as f32).sqrt() };
+            let init_up_d2 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_D2 as f32).sqrt() };
+            let init_down_d2 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_UP2 as f32).sqrt() };
 
-            let wl1 = builder.new_weights("wl1", Shape::new(MIXER_D1, MIXER_D1), mixer_init_d1);
-            let left_mix = wl1.broadcast_across_batch().matmul(x).crelu();
-            x = x + left_mix;
+            for i in 1..=NUM_LAYERS {
+                let wl_up = builder.new_weights(format!("wl{i}_up"), Shape::new(MIXER_UP1, MIXER_D1), init_up_d1);
+                let wl_down = builder.new_weights(format!("wl{i}_down"), Shape::new(MIXER_D1, MIXER_UP1), init_down_d1);
+                let left_mix = wl_down.matmul(wl_up.matmul(x).crelu());
+                x = x + left_mix;
 
-            let wr1 = builder.new_weights("wr1", Shape::new(MIXER_D2, MIXER_D2), mixer_init_d2);
-            let right_mix = x.matmul(wr1.broadcast_across_batch()).crelu();
-            x = x + right_mix;
-
-            let wl2 = builder.new_weights("wl2", Shape::new(MIXER_D1, MIXER_D1), mixer_init_d1);
-            let left_mix_2 = wl2.broadcast_across_batch().matmul(x).crelu();
-            x = x + left_mix_2;
-
-            let wr2 = builder.new_weights("wr2", Shape::new(MIXER_D2, MIXER_D2), mixer_init_d2);
-            let right_mix_2 = x.matmul(wr2.broadcast_across_batch()).crelu();
-            x = x + right_mix_2;
+                let wr_up = builder.new_weights(format!("wr{i}_up"), Shape::new(MIXER_D2, MIXER_UP2), init_up_d2);
+                let wr_down = builder.new_weights(format!("wr{i}_down"), Shape::new(MIXER_UP2, MIXER_D2), init_down_d2);
+                let right_mix = x.matmul(wr_up).crelu().matmul(wr_down);
+                x = x + right_mix;
+            }
 
             let x_final = x.reshape(Shape::new(L1, 1));
 
-            let v_head = builder.new_affine("v_head", L1, 1);
+            let v_head = builder.new_affine("value_head", L1, 1);
             v_head.forward(x_final)
         });
 
@@ -224,8 +228,8 @@ fn main() {
         net_id: "vine_mixer_64x64".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
-            batch_size: 16_384,
-            batches_per_superbatch: 6104,
+            batch_size: 16_384 / 4,
+            batches_per_superbatch: 6104 * 4,
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES,
         },

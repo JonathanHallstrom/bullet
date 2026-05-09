@@ -121,15 +121,6 @@ fn main() {
         .inputs(ChessBucketsMirrored::new(BUCKET_LAYOUT))
         .output_buckets(MaterialCount::<OUTPUT_BUCKETS>)
         .save_format(&[
-            // SavedFormat::id("l0f"),
-            // SavedFormat::id("l0w"),
-            // SavedFormat::id("l0b"),
-            // SavedFormat::id("l1w"),
-            // SavedFormat::id("l1b"),
-            // SavedFormat::id("l2w"),
-            // SavedFormat::id("l2b"),
-            // SavedFormat::id("l3w"),
-            // SavedFormat::id("l3b"),
             SavedFormat::id("l0w")
                 .transform(|builder, mut weights| {
                     let expanded = builder.get("l0f").values.f32().repeat(INPUT_BUCKETS);
@@ -152,7 +143,7 @@ fn main() {
                 })
                 .round()
                 .quantise::<i8>(Q1),
-            SavedFormat::id("l1b").round().quantise::<i32>(Q as i32),
+            SavedFormat::id("l1b").round().quantise::<i32>(Q as i32 * 256),
             SavedFormat::id("l2w").round().quantise::<i32>(Q as i32),
             SavedFormat::id("l2b").round().quantise::<i32>((Q as i32).pow(3)),
             SavedFormat::id("l3w").round().quantise::<i32>(Q as i32),
@@ -260,20 +251,17 @@ fn main() {
     //     &settings,
     //     &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
     // );
-    // // trainer.load_from_checkpoint("checkpoints/pawnocchio_2048_dualact_pretrain/");
-    // trainer.run(
-    //     &stage1_schedule,
-    //     &settings,
-    //     &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
-    // );
-    // trainer.run(
-    //     &stage2_schedule,
-    //     &settings,
-    //     &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
-    // );
-
-    trainer.load_from_checkpoint("checkpoints/pawnocchio_pretrain_stage2-200/");
-    trainer.save_to_checkpoint("checkpoints/pawnocchio_pretrain_stage2-200_kiri/");
+    trainer.load_from_checkpoint("checkpoints/pawnocchio_2048_dualact_pretrain/");
+    trainer.run(
+        &stage1_schedule,
+        &settings,
+        &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
+    );
+    trainer.run(
+        &stage2_schedule,
+        &settings,
+        &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
+    );
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
