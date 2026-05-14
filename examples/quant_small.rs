@@ -90,7 +90,7 @@ fn main() {
     let L1_SIZE = 1536;
     let L2_SIZE = 16;
     // let dataset_path = "/k4/quant_data/net39_data.binpack";
-    let dataset_path = "/k4/quant_data/net39_net44_data.binpack";
+    let dataset_path = "/k4/quant_data/net39_net44_shuffled.binpack";
     // let dataset_path = "/k4/quant_data/vf/net39.vf";
     let initial_lr = 1e-3;
     let final_lr = 1e-3 * 0.3f32.powi(4);
@@ -124,14 +124,14 @@ fn main() {
     // ];
     #[rustfmt::skip]
     const BUCKET_LAYOUT: [usize; 32] = [
-        0, 1, 2, 3,
-        4, 4, 5, 5,
-        6, 6, 6, 6,
-        6, 6, 6, 6,
-        7, 7, 7, 7,
-        7, 7, 7, 7,
-        7, 7, 7, 7,
-        7, 7, 7, 7,
+         0,  1,  2,  3,
+         4,  5,  6,  7,
+         8,  9, 10, 11,
+         8,  9, 10, 11,
+        12, 12, 13, 13,
+        12, 12, 13, 13,
+        14, 14, 15, 15,
+        14, 14, 15, 15,
     ];
 
     const NUM_INPUT_BUCKETS: usize = get_num_buckets(&BUCKET_LAYOUT);
@@ -154,8 +154,7 @@ fn main() {
             SavedFormat::id("l3w").transpose(),
             SavedFormat::id("l3b"),
         ])
-        .loss_fn(|output, target| output.sigmoid().squared_error(target))
-        .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
+        .build_custom(|builder, (stm_inputs, ntm_inputs, output_buckets), target| {
             // input layer factoriser
             let l0f = builder.new_weights("l0f", Shape::new(L1_SIZE, 768), InitSettings::Zeroed);
             let expanded_factoriser = l0f.repeat(NUM_INPUT_BUCKETS);
@@ -174,11 +173,21 @@ fn main() {
             let stm_hidden = l0.forward(stm_inputs).crelu().pairwise_mul();
             let ntm_hidden = l0.forward(ntm_inputs).crelu().pairwise_mul();
             let hl1 = stm_hidden.concat(ntm_hidden);
+
+            let l1_ones: Vec<f32> = vec![1.0 / L1_SIZE as f32; L1_SIZE];
+            let ones_l1_vec = builder.new_constant(Shape::new(1, L1_SIZE), &l1_ones);
+            let l0_out_norm = ones_l1_vec.matmul(hl1);
+
             let l1_out = l1.forward(hl1).select(output_buckets);
             let hl2 = l1_out.concat(l1_out.abs_pow(2.0)).crelu();
             // let hl2 = l1_out.screlu();
             let hl3 = l2.forward(hl2).select(output_buckets).screlu();
-            l3.forward(hl3).select(output_buckets)
+            let out = l3.forward(hl3).select(output_buckets);
+
+            let loss = out.sigmoid().squared_error(target);
+            let loss = loss + 0.005 * l0_out_norm;
+
+            (out, loss)
         });
 
     // need to account for factoriser weight magnitudes
@@ -187,7 +196,7 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
     trainer.optimiser.set_params_for_weight("l1w", stricter_clipping);
 
-    let id = "quant_net56_1536";
+    let id = "quant_net59_1536";
     let stage0 = TrainingSchedule {
         net_id: id.to_string() + "_stage0",
         eval_scale: 400.0,
@@ -246,7 +255,8 @@ fn main() {
     };
 
     // trainer.run(&stage0, &settings, &dataloader(dataset_path));
-    trainer.run(&stage1, &settings, &dataloader(dataset_path));
+    // trainer.run(&stage1, &settings, &dataloader(dataset_path));
+    trainer.load_from_checkpoint("checkpoints/quant_net59_1536_stage1-400");
     trainer.run(&stage2, &settings, &dataloader(dataset_path));
 
     for fen in [
