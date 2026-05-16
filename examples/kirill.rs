@@ -1,19 +1,11 @@
-use std::default;
-
 /*
 This is about as simple as you can get with a network, the arch is
     (768 -> HIDDEN_SIZE)x2 -> 1
 and the training schedule is pretty sensible.
-There's potentially a lot of elo available by adjusting the wdl
-and lr schedulers, depending on your dataset.
 */
 use bullet_lib::{
     game::{
-        formats::sfbinpack::{
-            TrainingDataEntry,
-            chess::{r#move::MoveType, piecetype::PieceType},
-        },
-        inputs::{self, get_num_buckets},
+        inputs::{self, SparseInputType, get_num_buckets},
         outputs,
     },
     nn::{
@@ -25,10 +17,7 @@ use bullet_lib::{
         schedule::{TrainingSchedule, TrainingSteps, lr, wdl},
         settings::LocalSettings,
     },
-    value::{
-        ValueTrainerBuilder,
-        loader::{self, ViriBinpackLoader},
-    },
+    value::{ValueTrainerBuilder, loader::ViriBinpackLoader},
 };
 
 const L1: usize = 1024;
@@ -39,10 +28,17 @@ const SUPERBATCHES: usize = 400;
 const Q0: i16 = 255;
 const Q1: i16 = 128;
 const Q: i16 = 64;
-const OUTPUT_BUCKETS: usize = 8;
 
 #[rustfmt::skip]
 const BUCKET_LAYOUT: [usize; 32] = [
+    // 0,  1,  2,  3,
+    // 4,  5,  6,  7,
+    // 8,  8,  8,  8,
+    // 9,  9,  9,  9,
+    // 10, 10, 10, 10,
+    // 10, 10, 10, 10,
+    // 11, 11, 11, 11,
+    // 11, 11, 11, 11,
     0, 1, 2, 3,
     4, 4, 5, 5,
     6, 6, 6, 6,
@@ -53,6 +49,46 @@ const BUCKET_LAYOUT: [usize; 32] = [
     7, 7, 7, 7,
 ];
 const INPUT_BUCKETS: usize = get_num_buckets(&BUCKET_LAYOUT);
+const MATERIAL_BUCKETS: usize = 8;
+const OUTPUT_BUCKETS: usize = MATERIAL_BUCKETS * INPUT_BUCKETS;
+
+#[derive(Clone, Copy, Default)]
+pub struct KingMaterialCount<const M: usize, const K: usize> {
+    pub king: inputs::ChessBucketsMirrored,
+    pub material: outputs::MaterialCount<M>,
+}
+
+impl<const M: usize, const K: usize> KingMaterialCount<M, K> {
+    pub fn new(buckets: [usize; 32]) -> Self {
+        Self { king: inputs::ChessBucketsMirrored::new(buckets), material: outputs::MaterialCount::<M> }
+    }
+}
+
+impl<const M: usize, const K: usize> outputs::OutputBuckets<bulletformat::ChessBoard> for KingMaterialCount<M, K> {
+    const BUCKETS: usize = M * K;
+
+    fn bucket(&self, pos: &bulletformat::ChessBoard) -> u8 {
+        let material_bucket = self.material.bucket(pos);
+
+        let mut king_bucket = 0;
+        let inputs_per_bucket = self.king.num_inputs() / K;
+        self.king.map_features(pos, |stm, _| {
+            king_bucket = (stm / inputs_per_bucket) as u8;
+        });
+
+        king_bucket * M as u8 + material_bucket
+    }
+}
+
+impl<const M: usize, const K: usize> outputs::OutputBuckets<bulletformat::chess::MarlinFormat>
+    for KingMaterialCount<M, K>
+{
+    const BUCKETS: usize = M * K;
+
+    fn bucket(&self, pos: &bulletformat::chess::MarlinFormat) -> u8 {
+        return self.bucket(&bulletformat::ChessBoard::from(*pos));
+    }
+}
 
 const FT_SHIFT: usize = 8;
 const FT_SHIFT_SCALE: f32 = Q0 as f32 / ((1 << FT_SHIFT) as f32);
@@ -68,7 +104,7 @@ fn main() {
         .optimiser(optimiser::AdamW)
         // basic piece-square chessboard inputs
         .inputs(inputs::ChessBucketsMirrored::new(BUCKET_LAYOUT))
-        .output_buckets(outputs::MaterialCount::<OUTPUT_BUCKETS>)
+        .output_buckets(KingMaterialCount::<MATERIAL_BUCKETS, INPUT_BUCKETS>::new(BUCKET_LAYOUT))
         .save_format(&[
             SavedFormat::id("l0w")
                 .transform(|builder, mut weights| {
@@ -141,7 +177,7 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l1w", l1_clip);
 
     let schedule = TrainingSchedule {
-        net_id: "kirill_1024_pw_8ib_lin".to_string(),
+        net_id: "kirill_1024_pw_8ib_lin_crazy_buckets".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
             batch_size: 16_384 * 8,
