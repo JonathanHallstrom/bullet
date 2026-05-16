@@ -6,7 +6,7 @@ and the training schedule is pretty sensible.
 use bullet_lib::{
     game::{
         inputs::{self, SparseInputType, get_num_buckets},
-        outputs,
+        outputs::{self, OutputBuckets},
     },
     nn::{
         InitSettings, Shape,
@@ -19,6 +19,7 @@ use bullet_lib::{
     },
     value::{ValueTrainerBuilder, loader::ViriBinpackLoader},
 };
+use bulletformat::ChessBoard;
 
 const L1: usize = 1024;
 const L2: usize = 16;
@@ -55,12 +56,11 @@ const OUTPUT_BUCKETS: usize = MATERIAL_BUCKETS * INPUT_BUCKETS;
 #[derive(Clone, Copy, Default)]
 pub struct KingMaterialCount<const M: usize, const K: usize> {
     pub king: inputs::ChessBucketsMirrored,
-    pub material: outputs::MaterialCount<M>,
 }
 
 impl<const M: usize, const K: usize> KingMaterialCount<M, K> {
     pub fn new(buckets: [usize; 32]) -> Self {
-        Self { king: inputs::ChessBucketsMirrored::new(buckets), material: outputs::MaterialCount::<M> }
+        Self { king: inputs::ChessBucketsMirrored::new(buckets) }
     }
 }
 
@@ -68,7 +68,24 @@ impl<const M: usize, const K: usize> outputs::OutputBuckets<bulletformat::ChessB
     const BUCKETS: usize = M * K;
 
     fn bucket(&self, pos: &bulletformat::ChessBoard) -> u8 {
-        let material_bucket = self.material.bucket(pos);
+        let divisor = 62_u8.div_ceil(M as u8);
+        let material_bucket = {
+            let mut res: u8 = 0;
+
+            #[rustfmt::skip]
+            const WEIGHTS: [u8; 16] = [
+                0, 3, 3, 5, 9, 0, 0, 0,
+                0, 3, 3, 5, 9, 0, 0, 0,
+            ];
+
+            let num_pieces = pos.occ().count_ones() as usize;
+            for &pc in &pos.pcs[0..num_pieces.div_ceil(2)] {
+                res += WEIGHTS[(pc & 0xf) as usize];
+                res += WEIGHTS[(pc >> 4) as usize];
+            }
+
+            res / divisor
+        };
 
         let mut king_bucket = 0;
         let inputs_per_bucket = self.king.num_inputs() / K;
@@ -96,6 +113,12 @@ const I8_RANGE: f32 = i8::MAX as f32 / (Q1 as f32);
 const L1_RANGE: f32 = I8_RANGE * FT_SHIFT_SCALE * FT_SHIFT_SCALE;
 
 fn main() {
+    {
+        let pos = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 | 0 | 0.0".parse::<ChessBoard>().unwrap();
+        let buckets = KingMaterialCount::<MATERIAL_BUCKETS, INPUT_BUCKETS>::new(BUCKET_LAYOUT);
+        println!("{}", buckets.bucket(&pos));
+    }
+
     let mut trainer = ValueTrainerBuilder::default()
         // makes `ntm_inputs` available below
         .dual_perspective()

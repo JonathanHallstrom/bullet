@@ -182,12 +182,13 @@ fn main() {
         vec![SavedFormat::id("l0w").round().quantise::<i16>(QA), SavedFormat::id("l0b").round().quantise::<i16>(QA)];
 
     for i in 1..=NUM_LAYERS {
-        save_format.push(SavedFormat::id(format!("wl{i}_up")));
-        save_format.push(SavedFormat::id(format!("wl{i}_down")));
-        save_format.push(SavedFormat::id(format!("wr{i}_up")));
-        save_format.push(SavedFormat::id(format!("wr{i}_down")));
+        save_format.push(SavedFormat::id(&format!("wl{i}_up")));
+        save_format.push(SavedFormat::id(&format!("wl{i}_down")));
+        save_format.push(SavedFormat::id(&format!("wr{i}_up")));
+        save_format.push(SavedFormat::id(&format!("wr{i}_down")));
     }
-    save_format.append(vec![SavedFormat::id("value_headw"), SavedFormat::id("value_headb")]);
+    save_format.push(SavedFormat::id("value_headw"));
+    save_format.push(SavedFormat::id("value_headb"));
 
     let mut trainer = ValueTrainerBuilder::default()
         .single_perspective()
@@ -207,13 +208,17 @@ fn main() {
             let init_down_d2 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_UP2 as f32).sqrt() };
 
             for i in 1..=NUM_LAYERS {
-                let wl_up = builder.new_weights(format!("wl{i}_up"), Shape::new(MIXER_UP1, MIXER_D1), init_up_d1);
-                let wl_down = builder.new_weights(format!("wl{i}_down"), Shape::new(MIXER_D1, MIXER_UP1), init_down_d1);
+                let wl_up = builder
+                    .new_weights(&format!("wl{i}_up"), Shape::new(MIXER_UP1, MIXER_D1), init_up_d1);
+                let wl_down = builder
+                    .new_weights(&format!("wl{i}_down"), Shape::new(MIXER_D1, MIXER_UP1), init_down_d1);
                 let left_mix = wl_down.matmul(wl_up.matmul(x).crelu());
                 x = x + left_mix;
 
-                let wr_up = builder.new_weights(format!("wr{i}_up"), Shape::new(MIXER_D2, MIXER_UP2), init_up_d2);
-                let wr_down = builder.new_weights(format!("wr{i}_down"), Shape::new(MIXER_UP2, MIXER_D2), init_down_d2);
+                let wr_up = builder
+                    .new_weights(&format!("wr{i}_up"), Shape::new(MIXER_D2, MIXER_UP2), init_up_d2);
+                let wr_down = builder
+                    .new_weights(&format!("wr{i}_down"), Shape::new(MIXER_UP2, MIXER_D2), init_down_d2);
                 let right_mix = x.matmul(wr_up).crelu().matmul(wr_down);
                 x = x + right_mix;
             }
