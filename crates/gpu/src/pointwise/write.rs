@@ -31,7 +31,7 @@ pub fn code_str(op: PointwiseOp, size: Size) -> Option<String> {
         PointwiseOp::ConditionalRead(io, value) => {
             let ty = tystr(io.buf_ty);
             let vl = match value {
-                DValue::F32(x) => x.to_string(),
+                DValue::F32(x) => format!("{x:E}"),
                 DValue::I32(x) => x.to_string(),
             };
 
@@ -74,7 +74,7 @@ pub fn code_str(op: PointwiseOp, size: Size) -> Option<String> {
         PointwiseOp::Constant { value, p2size } => {
             let ty = tystr(value.dtype());
             let vl = match value {
-                DValue::F32(x) => x.to_string(),
+                DValue::F32(x) => format!("{x:E}"),
                 DValue::I32(x) => x.to_string(),
             };
 
@@ -228,7 +228,7 @@ pub fn code_str(op: PointwiseOp, size: Size) -> Option<String> {
                     let m = rows / 2;
                     Some(format!(
                         "\
-                        {ty}2 OUT1 = make_{ty}2(0, 0, 0, 0);
+                        {ty}2 OUT1 = make_{ty}2(0, 0);
                         int UNIQ1 = IN3 / {m};
                         int UNIQ2 = IN3 % {m};
 
