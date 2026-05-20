@@ -1,8 +1,6 @@
-use std::u32;
-
 use bullet_lib::{
     game::inputs::{self},
-    nn::{InitSettings, Shape, optimiser},
+    nn::{InitSettings, ModelNode, Shape, optimiser},
     trainer::{
         save::SavedFormat,
         schedule::{TrainingSchedule, TrainingSteps, lr, wdl},
@@ -166,26 +164,33 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
     }
 }
 
-const SUPERBATCHES: usize = 3000;
+const SUPERBATCHES: usize = 1000;
 const DIM_GRAIN: usize = 16;
-const MIXER_D1: usize = 1 * DIM_GRAIN;
-const MIXER_D2: usize = 16 * DIM_GRAIN;
-const MIXER_UP1: usize = MIXER_D1;
-const MIXER_UP2: usize = MIXER_D2;
+const D1: usize = 1 * DIM_GRAIN;
+const D2: usize = 1 * DIM_GRAIN;
+const INNER1: usize = D1;
+const INNER2: usize = D2;
 const NUM_LAYERS: usize = 2;
-const L1: usize = MIXER_D1 * MIXER_D2;
+const FLAT: usize = D1 * D2;
 const SCALE: i32 = 400;
 const QA: i16 = 255;
+const DO_DOWN_PROJ: bool = false;
 
 fn main() {
+    assert!(INNER1 == D1 && INNER2 == D2 || DO_DOWN_PROJ);
+
     let mut save_format =
         vec![SavedFormat::id("l0w").round().quantise::<i16>(QA), SavedFormat::id("l0b").round().quantise::<i16>(QA)];
 
     for i in 1..=NUM_LAYERS {
         save_format.push(SavedFormat::id(&format!("wl{i}_up")));
-        save_format.push(SavedFormat::id(&format!("wl{i}_down")));
+        if DO_DOWN_PROJ {
+            save_format.push(SavedFormat::id(&format!("wl{i}_down")));
+        }
         save_format.push(SavedFormat::id(&format!("wr{i}_up")));
-        save_format.push(SavedFormat::id(&format!("wr{i}_down")));
+        if DO_DOWN_PROJ {
+            save_format.push(SavedFormat::id(&format!("wr{i}_down")));
+        }
     }
     save_format.push(SavedFormat::id("value_headw"));
     save_format.push(SavedFormat::id("value_headb"));
@@ -197,44 +202,68 @@ fn main() {
         .save_format(&save_format)
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
         .build(|builder, stm_inputs| {
-            let l0 = builder.new_affine("l0", 3072, L1);
+            let l0 = builder.new_affine("l0", 3072, FLAT);
             let x_flat = l0.forward(stm_inputs).crelu();
 
-            let mut x = x_flat.reshape(Shape::new(MIXER_D1, MIXER_D2));
+            let mut x = x_flat.reshape(Shape::new(D1, D2));
 
-            let init_up_d1 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_D1 as f32).sqrt() };
-            let init_down_d1 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_UP1 as f32).sqrt() };
-            let init_up_d2 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_D2 as f32).sqrt() };
-            let init_down_d2 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / MIXER_UP2 as f32).sqrt() };
+            let init_up_d1 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / D1 as f32).sqrt() };
+            let init_down_d1 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / INNER1 as f32).sqrt() };
+            let init_up_d2 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / D2 as f32).sqrt() };
+            let init_down_d2 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / INNER2 as f32).sqrt() };
+
+            fn activate<'a>(x: ModelNode<'a>) -> ModelNode<'a> {
+                return x.crelu();
+            }
 
             for i in 1..=NUM_LAYERS {
                 let wl_up = builder
-                    .new_weights(&format!("wl{i}_up"), Shape::new(MIXER_UP1, MIXER_D1), init_up_d1);
-                let wl_down = builder
-                    .new_weights(&format!("wl{i}_down"), Shape::new(MIXER_D1, MIXER_UP1), init_down_d1);
-                let left_mix = wl_down.matmul(wl_up.matmul(x).crelu());
+                    .new_weights(&format!("wl{i}_up"), Shape::new(INNER1, D1), init_up_d1)
+                    .broadcast_across_batch();
+                let mut left_mix = activate(wl_up.matmul(x));
+
+                if DO_DOWN_PROJ {
+                    let wl_down = builder
+                        .new_weights(&format!("wl{i}_down"), Shape::new(D1, INNER1), init_down_d1)
+                        .broadcast_across_batch();
+                    left_mix = wl_down.matmul(left_mix);
+                }
+
                 x = x + left_mix;
 
                 let wr_up = builder
-                    .new_weights(&format!("wr{i}_up"), Shape::new(MIXER_D2, MIXER_UP2), init_up_d2);
-                let wr_down = builder
-                    .new_weights(&format!("wr{i}_down"), Shape::new(MIXER_UP2, MIXER_D2), init_down_d2);
-                let right_mix = x.matmul(wr_up).crelu().matmul(wr_down);
+                    .new_weights(&format!("wr{i}_up"), Shape::new(D2, INNER2), init_up_d2)
+                    .broadcast_across_batch();
+                let mut right_mix = activate(x.matmul(wr_up));
+
+                if DO_DOWN_PROJ {
+                    let wr_down = builder
+                        .new_weights(&format!("wr{i}_down"), Shape::new(INNER2, D2), init_down_d2)
+                        .broadcast_across_batch();
+                    right_mix = right_mix.matmul(wr_down);
+                }
+
                 x = x + right_mix;
             }
 
-            let x_final = x.reshape(Shape::new(L1, 1));
+            let x_final = x.reshape(Shape::new(FLAT, 1));
 
-            let v_head = builder.new_affine("value_head", L1, 1);
+            let v_head = builder.new_affine("value_head", FLAT, 1);
             v_head.forward(x_final)
         });
 
     let schedule = TrainingSchedule {
-        net_id: "vine_mixer_64x64".to_string(),
+        net_id: format!(
+            "vine_mixer_{}_{}_{}_{}",
+            D1 / DIM_GRAIN,
+            D2 / DIM_GRAIN,
+            INNER1 / DIM_GRAIN,
+            INNER2 / DIM_GRAIN
+        ),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
-            batch_size: 16_384 / 4,
-            batches_per_superbatch: 6104 * 4,
+            batch_size: 16_384,
+            batches_per_superbatch: 6104,
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES,
         },

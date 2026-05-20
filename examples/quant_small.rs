@@ -196,13 +196,13 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
     trainer.optimiser.set_params_for_weight("l1w", stricter_clipping);
 
-    let id = "quant_net59_1536";
+    let id = "quant_net60_1536";
     let stage0 = TrainingSchedule {
         net_id: id.to_string() + "_stage0",
         eval_scale: 400.0,
         steps: TrainingSteps {
-            batch_size: 16_384 * 8,
-            batches_per_superbatch: 6104 / 8,
+            batch_size: 16_384,
+            batches_per_superbatch: 6104,
             start_superbatch: 1,
             end_superbatch: s0_superbatches,
         },
@@ -254,9 +254,8 @@ fn main() {
         // ViriBinpackLoader::new(path, buffer_size_mb, threads, ViriFilter::Custom(filter))
     };
 
-    // trainer.run(&stage0, &settings, &dataloader(dataset_path));
+    trainer.run(&stage0, &settings, &dataloader(dataset_path));
     trainer.run(&stage1, &settings, &dataloader(dataset_path));
-    // trainer.load_from_checkpoint("checkpoints/quant_net59_1536_stage1-400");
     trainer.run(&stage2, &settings, &dataloader(dataset_path));
 
     for fen in [
