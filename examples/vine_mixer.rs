@@ -167,14 +167,15 @@ fn map_features<F: FnMut(usize)>(mut bbs: [u64; 8], mut f: F) {
 const SUPERBATCHES: usize = 1000;
 const DIM_GRAIN: usize = 16;
 const D1: usize = 1 * DIM_GRAIN;
-const D2: usize = 1 * DIM_GRAIN;
+const D2: usize = 2 * DIM_GRAIN;
 const INNER1: usize = D1;
 const INNER2: usize = D2;
 const NUM_LAYERS: usize = 2;
 const FLAT: usize = D1 * D2;
 const SCALE: i32 = 400;
 const QA: i16 = 255;
-const DO_DOWN_PROJ: bool = false;
+const DO_DOWN_PROJ: bool = true;
+const GATED: bool = true;
 
 fn main() {
     assert!(INNER1 == D1 && INNER2 == D2 || DO_DOWN_PROJ);
@@ -184,10 +185,18 @@ fn main() {
 
     for i in 1..=NUM_LAYERS {
         save_format.push(SavedFormat::id(&format!("wl{i}_up")));
+        if GATED {
+            save_format.push(SavedFormat::id(&format!("wl{i}_up_v")));
+        }
+
         if DO_DOWN_PROJ {
             save_format.push(SavedFormat::id(&format!("wl{i}_down")));
         }
         save_format.push(SavedFormat::id(&format!("wr{i}_up")));
+        if GATED {
+            save_format.push(SavedFormat::id(&format!("wr{i}_up_v")));
+        }
+
         if DO_DOWN_PROJ {
             save_format.push(SavedFormat::id(&format!("wr{i}_down")));
         }
@@ -213,34 +222,36 @@ fn main() {
             let init_down_d2 = InitSettings::Normal { mean: 0.0, stdev: (2.0 / INNER2 as f32).sqrt() };
 
             fn activate<'a>(x: ModelNode<'a>) -> ModelNode<'a> {
-                return x.crelu();
+                return x * x.sigmoid();
             }
 
             for i in 1..=NUM_LAYERS {
-                let wl_up = builder
-                    .new_weights(&format!("wl{i}_up"), Shape::new(INNER1, D1), init_up_d1)
-                    .broadcast_across_batch();
-                let mut left_mix = activate(wl_up.matmul(x));
+                let wl_up = builder.new_weights(&format!("wl{i}_up"), Shape::new(INNER1, D1), init_up_d1);
+                let mut left_mix = activate(wl_up.matmul_strided(x));
+
+                if GATED {
+                    let wl_up_v = builder.new_weights(&format!("wl{i}_up_v"), Shape::new(INNER1, D1), init_up_d1);
+                    left_mix = left_mix * wl_up_v.matmul_strided(x)
+                }
 
                 if DO_DOWN_PROJ {
-                    let wl_down = builder
-                        .new_weights(&format!("wl{i}_down"), Shape::new(D1, INNER1), init_down_d1)
-                        .broadcast_across_batch();
-                    left_mix = wl_down.matmul(left_mix);
+                    let wl_down = builder.new_weights(&format!("wl{i}_down"), Shape::new(D1, INNER1), init_down_d1);
+                    left_mix = wl_down.matmul_strided(left_mix);
                 }
 
                 x = x + left_mix;
 
-                let wr_up = builder
-                    .new_weights(&format!("wr{i}_up"), Shape::new(D2, INNER2), init_up_d2)
-                    .broadcast_across_batch();
-                let mut right_mix = activate(x.matmul(wr_up));
+                let wr_up = builder.new_weights(&format!("wr{i}_up"), Shape::new(D2, INNER2), init_up_d2);
+                let mut right_mix = activate(x.matmul_strided(wr_up));
+
+                if GATED {
+                    let wr_up_v = builder.new_weights(&format!("wr{i}_up_v"), Shape::new(D2, INNER2), init_up_d2);
+                    right_mix = right_mix * x.matmul_strided(wr_up_v);
+                }
 
                 if DO_DOWN_PROJ {
-                    let wr_down = builder
-                        .new_weights(&format!("wr{i}_down"), Shape::new(INNER2, D2), init_down_d2)
-                        .broadcast_across_batch();
-                    right_mix = right_mix.matmul(wr_down);
+                    let wr_down = builder.new_weights(&format!("wr{i}_down"), Shape::new(INNER2, D2), init_down_d2);
+                    right_mix = right_mix.matmul_strided(wr_down);
                 }
 
                 x = x + right_mix;
@@ -252,21 +263,20 @@ fn main() {
             v_head.forward(x_final)
         });
 
+    let batch_size: usize = 16384;
+    let batches_per_superbatch: usize = 100_000_000_usize.div_ceil(batch_size);
+
     let schedule = TrainingSchedule {
         net_id: format!(
-            "vine_mixer_{}_{}_{}_{}",
+            "vine_mixer_{}_{}_{}_{}{}_swiglu_longer",
             D1 / DIM_GRAIN,
             D2 / DIM_GRAIN,
             INNER1 / DIM_GRAIN,
-            INNER2 / DIM_GRAIN
+            INNER2 / DIM_GRAIN,
+            if DO_DOWN_PROJ { "_down" } else { "" }
         ),
         eval_scale: SCALE as f32,
-        steps: TrainingSteps {
-            batch_size: 16_384,
-            batches_per_superbatch: 6104,
-            start_superbatch: 1,
-            end_superbatch: SUPERBATCHES,
-        },
+        steps: TrainingSteps { batch_size, batches_per_superbatch, start_superbatch: 1, end_superbatch: SUPERBATCHES },
         wdl_scheduler: wdl::Warmup { inner: wdl::ConstantWDL { value: 1.0 }, warmup_batches: 2000 },
         lr_scheduler: lr::Warmup {
             inner: lr::LinearDecayLR {
@@ -283,7 +293,7 @@ fn main() {
         LocalSettings { threads: 8, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
     let data_loader = loader::ViriBinpackLoader::new(
-        "/k4/vine_data/vine_43/vine_43_adj.vf",
+        "/k4/vine_data/vine_37/vine_42_adj.vf",
         16384,
         16,
         Filter {
@@ -306,6 +316,7 @@ fn main() {
         },
     );
 
+    // trainer.load_from_checkpoint("checkpoints/vine_mixer_1_3_1_3_down_swiglu-100");
     trainer.run(&schedule, &settings, &data_loader);
 
     for fen in [
