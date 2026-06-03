@@ -116,12 +116,20 @@ name = "quant_small"
 path = "../../examples/quant_small.rs"
 
 [[example]]
+name = "quant_large"
+path = "../../examples/quant_large.rs"
+
+[[example]]
 name = "pawnocchio_multilayer"
 path = "../../examples/pawnocchio_multilayer.rs"
 
 [[example]]
 name = "pawnocchio_chonker"
 path = "../../examples/pawnocchio_chonker.rs"
+
+[[example]]
+name = "pawnocchio_chonker_pp"
+path = "../../examples/pawnocchio_chonker_pp.rs"
 
 [[example]]
 name = "eleanor"
@@ -138,3 +146,11 @@ path = "../../examples/yukari-sti.rs"
 [[example]]
 name = "vine_mixer"
 path = "../../examples/vine_mixer.rs"
+
+[[example]]
+name = "pawnocchio_ti"
+path = "../../examples/pawnocchio_ti.rs"
+
+[[example]]
+name = "pawnocchio_pp_masked"
+path = "../../examples/pawnocchio_pp_masked.rs"

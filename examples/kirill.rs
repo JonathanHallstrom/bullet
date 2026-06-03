@@ -6,7 +6,7 @@ and the training schedule is pretty sensible.
 use bullet_lib::{
     game::{
         inputs::{self, SparseInputType, get_num_buckets},
-        outputs::{self, OutputBuckets},
+        outputs,
     },
     nn::{
         InitSettings, Shape,
@@ -19,7 +19,6 @@ use bullet_lib::{
     },
     value::{ValueTrainerBuilder, loader::ViriBinpackLoader},
 };
-use bulletformat::ChessBoard;
 
 const L1: usize = 1024;
 const L2: usize = 16;
@@ -32,22 +31,22 @@ const Q: i16 = 64;
 
 #[rustfmt::skip]
 const BUCKET_LAYOUT: [usize; 32] = [
-    // 0,  1,  2,  3,
-    // 4,  5,  6,  7,
-    // 8,  8,  8,  8,
-    // 9,  9,  9,  9,
-    // 10, 10, 10, 10,
-    // 10, 10, 10, 10,
-    // 11, 11, 11, 11,
-    // 11, 11, 11, 11,
-    0, 1, 2, 3,
-    4, 4, 5, 5,
-    6, 6, 6, 6,
-    6, 6, 6, 6,
-    7, 7, 7, 7,
-    7, 7, 7, 7,
-    7, 7, 7, 7,
-    7, 7, 7, 7,
+    0,  1,  2,  3,
+    4,  5,  6,  7,
+    8,  8,  8,  8,
+    9,  9,  9,  9,
+    10, 10, 10, 10,
+    10, 10, 10, 10,
+    11, 11, 11, 11,
+    11, 11, 11, 11,
+    // 0, 1, 2, 3,
+    // 4, 4, 5, 5,
+    // 6, 6, 6, 6,
+    // 6, 6, 6, 6,
+    // 7, 7, 7, 7,
+    // 7, 7, 7, 7,
+    // 7, 7, 7, 7,
+    // 7, 7, 7, 7,
 ];
 const INPUT_BUCKETS: usize = get_num_buckets(&BUCKET_LAYOUT);
 const MATERIAL_BUCKETS: usize = 8;
@@ -56,11 +55,12 @@ const OUTPUT_BUCKETS: usize = MATERIAL_BUCKETS * INPUT_BUCKETS;
 #[derive(Clone, Copy, Default)]
 pub struct KingMaterialCount<const M: usize, const K: usize> {
     pub king: inputs::ChessBucketsMirrored,
+    pub material: outputs::MaterialCount<M>,
 }
 
 impl<const M: usize, const K: usize> KingMaterialCount<M, K> {
     pub fn new(buckets: [usize; 32]) -> Self {
-        Self { king: inputs::ChessBucketsMirrored::new(buckets) }
+        Self { king: inputs::ChessBucketsMirrored::new(buckets), material: outputs::MaterialCount::<M> }
     }
 }
 
@@ -68,24 +68,7 @@ impl<const M: usize, const K: usize> outputs::OutputBuckets<bulletformat::ChessB
     const BUCKETS: usize = M * K;
 
     fn bucket(&self, pos: &bulletformat::ChessBoard) -> u8 {
-        let divisor = 62_u8.div_ceil(M as u8);
-        let material_bucket = {
-            let mut res: u8 = 0;
-
-            #[rustfmt::skip]
-            const WEIGHTS: [u8; 16] = [
-                0, 3, 3, 5, 9, 0, 0, 0,
-                0, 3, 3, 5, 9, 0, 0, 0,
-            ];
-
-            let num_pieces = pos.occ().count_ones() as usize;
-            for &pc in &pos.pcs[0..num_pieces.div_ceil(2)] {
-                res += WEIGHTS[(pc & 0xf) as usize];
-                res += WEIGHTS[(pc >> 4) as usize];
-            }
-
-            res / divisor
-        };
+        let material_bucket = self.material.bucket(pos);
 
         let mut king_bucket = 0;
         let inputs_per_bucket = self.king.num_inputs() / K;
@@ -113,12 +96,6 @@ const I8_RANGE: f32 = i8::MAX as f32 / (Q1 as f32);
 const L1_RANGE: f32 = I8_RANGE * FT_SHIFT_SCALE * FT_SHIFT_SCALE;
 
 fn main() {
-    {
-        let pos = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 | 0 | 0.0".parse::<ChessBoard>().unwrap();
-        let buckets = KingMaterialCount::<MATERIAL_BUCKETS, INPUT_BUCKETS>::new(BUCKET_LAYOUT);
-        println!("{}", buckets.bucket(&pos));
-    }
-
     let mut trainer = ValueTrainerBuilder::default()
         // makes `ntm_inputs` available below
         .dual_perspective()
@@ -200,7 +177,7 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l1w", l1_clip);
 
     let schedule = TrainingSchedule {
-        net_id: "kirill_1024_pw_8ib_lin_crazy_buckets".to_string(),
+        net_id: "kirill_1024_pw_12ib_lin_crazy_buckets".to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
             batch_size: 16_384 * 8,
@@ -240,6 +217,7 @@ fn main() {
 
     // trainer.load_from_checkpoint("checkpoints/kirill_1024_pw_ib-200");
     // trainer.save_to_checkpoint("checkpoints/kirill_1024_pw_ib-200");
+    // trainer.load_from_checkpoint("checkpoints/kirill_1024_pw_ib-200");
     trainer.run(&schedule, &settings, &data_loader);
     // trainer.load_from_checkpoint("checkpoints/kirill_512_multi-200");
 

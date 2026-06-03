@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bullet_lib::{
-    game::{inputs::ChessBucketsMirrored, outputs::MaterialCount},
+    game::{inputs::SparseInputType, outputs::MaterialCount},
     nn::{
-        InitSettings, Shape,
+        Shape,
         optimiser::{AdamW, AdamWParams},
     },
     trainer::{
@@ -25,9 +25,9 @@ use viriformat::{
 
 type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
-const NET_NAME: &'static str = "pawnocchio_chonker";
+const NET_NAME: &'static str = "pawnocchio_chonker_pp";
 
-const SUPERBATCHES_STAGE: usize = 3000;
+const SUPERBATCHES: usize = 3000;
 const L1: usize = 4096;
 const L2: usize = 128;
 const L3: usize = 256;
@@ -169,25 +169,45 @@ fn print_filter_stats() {
 #[path = "pawn_pawn_masked.rs"]
 mod inputs;
 
+use inputs::pawn_pawn_inputs;
+
 fn main() {
+    let inputs = pawn_pawn_inputs::PawnPawnInputs::new(BUCKET_LAYOUT, pawn_pawn_inputs::three_file_band_mask());
+
     let mut trainer = ValueTrainerBuilder::default()
         .dual_perspective()
         .optimiser(Optimiser::default())
-        .inputs(ChessBucketsMirrored::new(BUCKET_LAYOUT))
+        .inputs(inputs)
         .output_buckets(MaterialCount::<OUTPUT_BUCKETS>)
         .save_format(&[
             SavedFormat::id("l0w")
-                .transform(|builder, mut weights| {
-                    let expanded = builder.get("l0f").values.f32().repeat(INPUT_BUCKETS);
-
-                    for (i, &j) in weights.iter_mut().zip(expanded.iter()) {
-                        *i += j;
-                    }
-
-                    weights
+                .transform(|_, weights| {
+                    let pp_threats =
+                        pawn_pawn_inputs::PawnPawnInputs::TOTAL_PAIRS + pawn_pawn_inputs::PawnPawnInputs::TOTAL_THREATS;
+                    let shared = weights[pp_threats * L1..(pp_threats + 768) * L1].repeat(INPUT_BUCKETS);
+                    let bucketed = &weights[(pp_threats + 768) * L1..];
+                    bucketed.iter().zip(shared).map(|(&a, b)| a + b).collect()
                 })
                 .round()
                 .quantise::<i16>(Q0),
+            SavedFormat::id("l0w")
+                .transform(|_, weights| {
+                    let pp_threats =
+                        pawn_pawn_inputs::PawnPawnInputs::TOTAL_PAIRS + pawn_pawn_inputs::PawnPawnInputs::TOTAL_THREATS;
+                    let clip = i8::MAX as f32 / Q0 as f32;
+                    println!(
+                        "{} {}",
+                        weights[0..pp_threats * L1]
+                            .iter()
+                            .copied()
+                            .map(|f| { if f.clamp(-clip, clip) != f { 1 } else { 0 } })
+                            .sum::<i32>(),
+                        pp_threats * L1,
+                    );
+                    weights[0..pp_threats * L1].iter().map(|f| f.clamp(-clip, clip)).collect()
+                })
+                .round()
+                .quantise::<i8>(Q0),
             SavedFormat::id("l0b").round().quantise::<i16>(Q0),
             SavedFormat::id("l1w")
                 .transform(|_, mut weights| {
@@ -205,13 +225,8 @@ fn main() {
             SavedFormat::id("l3b").round().quantise::<i32>((Q as i32).pow(4)),
         ])
         .build_custom(|builder, (stm_inputs, ntm_inputs, output_buckets), target| {
-            // input layer factoriser
-            let l0f = builder.new_weights("l0f", Shape::new(L1, 768), InitSettings::Zeroed);
-            let expanded_factoriser = l0f.repeat(INPUT_BUCKETS);
-
-            // input layer weights
-            let mut l0 = builder.new_affine("l0", 768 * INPUT_BUCKETS, L1);
-            l0.weights = l0.weights + expanded_factoriser;
+            // input layer weights (factoriser is baked into the input feature layout)
+            let l0 = builder.new_affine("l0", inputs.num_inputs(), L1);
 
             // output layer weights
             let l1 = builder.new_affine("l1", L1, OUTPUT_BUCKETS * L2);
@@ -242,7 +257,6 @@ fn main() {
         });
     let l0_clip = OptimiserParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
     trainer.optimiser.set_params_for_weight("l0w", l0_clip);
-    trainer.optimiser.set_params_for_weight("l0f", l0_clip);
 
     let l1_clip = OptimiserParams { max_weight: L1_RANGE, min_weight: -L1_RANGE, ..Default::default() };
     trainer.optimiser.set_params_for_weight("l1w", l1_clip);
@@ -251,17 +265,17 @@ fn main() {
         net_id: NET_NAME.to_string(),
         eval_scale: SCALE as f32,
         steps: TrainingSteps {
-            batch_size: 16_384 * 4,
-            batches_per_superbatch: 6104 / 4,
-            start_superbatch: 526,
-            end_superbatch: SUPERBATCHES_STAGE,
+            batch_size: 16_384,
+            batches_per_superbatch: 6104,
+            start_superbatch: 1,
+            end_superbatch: SUPERBATCHES,
         },
         wdl_scheduler: wdl::ConstantWDL { value: 1.0 },
         lr_scheduler: lr::Warmup {
             inner: lr::LinearDecayLR {
                 initial_lr: 0.001 * f32::powi(0.3, 0),
                 final_lr: 0.001 * f32::powi(0.3, 7),
-                final_superbatch: SUPERBATCHES_STAGE,
+                final_superbatch: SUPERBATCHES,
             },
             warmup_batches: 200,
         },
@@ -273,63 +287,9 @@ fn main() {
 
     let binpack_dataset = "/k4/vine_data/vine_43/mixed_data_big.vf";
 
-    trainer.load_from_checkpoint("checkpoints/pawnocchio_chonker_stage2-200");
-
-    {
-        use inputs::pawn_pawn_inputs::PawnPawnInputs;
-
-        let mut bytes = Vec::new();
-        trainer.optimiser.model.write_to(&mut bytes).unwrap();
-
-        let mut weights = std::collections::HashMap::<String, Vec<f32>>::new();
-        let mut off = 0;
-        while off < bytes.len() {
-            let nl = bytes[off..].iter().position(|&b| b == b'\n').unwrap();
-            let id = String::from_utf8(bytes[off..off + nl].to_vec()).unwrap();
-            off += nl + 1;
-            let len = usize::from_le_bytes(bytes[off..off + 8].try_into().unwrap());
-            off += 8;
-            let vals = bytes[off..off + len * 4]
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                .collect::<Vec<f32>>();
-            off += len * 4;
-            weights.insert(id, vals);
-        }
-
-        let l0f = &weights["l0f"];
-        let l0w_old = &weights["l0w"];
-
-        let pp_threats = PawnPawnInputs::TOTAL_PAIRS + PawnPawnInputs::TOTAL_THREATS;
-        let num_inputs = pp_threats + 768 + 768 * INPUT_BUCKETS;
-        let mut new_l0w = vec![0.0f32; L1 * num_inputs];
-        new_l0w[pp_threats * L1..(pp_threats + 768) * L1].copy_from_slice(l0f);
-        new_l0w[(pp_threats + 768) * L1..(pp_threats + 768 + 768 * INPUT_BUCKETS) * L1].copy_from_slice(l0w_old);
-
-        let out: [(&str, &[f32]); 8] = [
-            ("l0w", &new_l0w),
-            ("l0b", weights["l0b"].as_slice()),
-            ("l1w", weights["l1w"].as_slice()),
-            ("l1b", weights["l1b"].as_slice()),
-            ("l2w", weights["l2w"].as_slice()),
-            ("l2b", weights["l2b"].as_slice()),
-            ("l3w", weights["l3w"].as_slice()),
-            ("l3b", weights["l3b"].as_slice()),
-        ];
-
-        let mut buf = Vec::new();
-        for (id, data) in out {
-            buf.extend_from_slice(id.as_bytes());
-            buf.push(b'\n');
-            buf.extend_from_slice(&usize::to_le_bytes(data.len()));
-            for &f in data {
-                buf.extend_from_slice(&f32::to_le_bytes(f));
-            }
-        }
-        std::fs::write("zero_filled_checkpoint", &buf).unwrap();
-        println!("wrote zero_filled_checkpoint: {num_inputs} inputs, l0w = {} f32", new_l0w.len());
-    }
-    // trainer.run(&schedule, &settings, &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)));
+    trainer.optimiser.load_weights_from_file("zero_filled_checkpoint");
+    // trainer.load_from_checkpoint("checkpoints/pawnocchio_chonker_stage1-525");
+    trainer.run(&schedule, &settings, &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)));
     //
     // print_filter_stats();
 

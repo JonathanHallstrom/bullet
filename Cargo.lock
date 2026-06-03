@@ -94,7 +94,6 @@ dependencies = [
  "bulletformat",
  "bytemuck",
  "montyformat",
- "parking_lot",
  "rand",
  "sfbinpack",
  "viriformat",

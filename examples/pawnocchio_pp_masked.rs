@@ -1,9 +1,9 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::cell::{Cell, RefCell};
 
 use bullet_lib::{
-    game::{inputs::ChessBucketsMirrored, outputs::MaterialCount},
+    game::{inputs::SparseInputType, outputs::MaterialCount},
     nn::{
-        InitSettings, Shape,
+        Shape,
         optimiser::{AdamW, AdamWParams},
     },
     trainer::{
@@ -16,7 +16,6 @@ use bullet_lib::{
         loader::{ViriBinpackLoader, viribinpack::ViriFilter},
     },
 };
-use bytemuck::zeroed;
 use rand::{Rng, rng};
 use viriformat::{
     chess::{board::Board, chessmove::Move},
@@ -25,12 +24,12 @@ use viriformat::{
 
 type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
-const NET_NAME: &'static str = "pawnocchio_pretrain";
+const NET_NAME: &str = "pawnocchio_3wide";
 
-const SUPERBATCHES_STAGE0: usize = 500;
+const SUPERBATCHES_STAGE0: usize = 100;
 const SUPERBATCHES_STAGE1: usize = 800;
 const SUPERBATCHES_STAGE2: usize = 200;
-const L1: usize = 2048;
+const L1: usize = 768;
 const L2: usize = 16;
 const L3: usize = 32;
 const SCALE: i32 = 400;
@@ -73,21 +72,29 @@ fn piece_count_acceptance(board: &Board) -> f64 {
         0.022727271053, 0.020641545085, 0.018411966423,
     ];
 
-    static PIECE_COUNT_STATS: [AtomicU64; 33] = zeroed();
-    static PIECE_COUNT_TOTAL: AtomicU64 = AtomicU64::new(0);
+    thread_local! {
+        static PIECE_COUNT_STATS: RefCell<[u64; 33]> = const { RefCell::new([0; 33]) };
+        static PIECE_COUNT_TOTAL: Cell<u64> = const { Cell::new(0) };
+    }
 
     let pc = board.pieces.occupied().count() as usize;
-    let count = PIECE_COUNT_STATS[pc].fetch_add(1, Ordering::Relaxed) + 1;
-    let total = PIECE_COUNT_TOTAL.fetch_add(1, Ordering::Relaxed) + 1;
+    let count = PIECE_COUNT_STATS.with_borrow_mut(|stats| {
+        stats[pc] += 1;
+        stats[pc]
+    });
+    let total = PIECE_COUNT_TOTAL.with(|t| {
+        let total = t.get() + 1;
+        t.set(total);
+        total
+    });
     let frequency = count as f64 / total as f64;
 
-    // Calculate the acceptance probability for this piece count
     let acceptance = 0.5 * DESIRED_DISTRIBUTION[pc] / frequency;
     acceptance.clamp(0., 1.)
 }
 
 fn filter(board: &Board, mv: Move, eval: i16, wdl: f32) -> bool {
-    let default_viri_filter = Filter {
+    const default_viri_filter: Filter = Filter {
         min_ply: 16,
         min_pieces: 4,
         filter_tactical: true,
@@ -99,9 +106,13 @@ fn filter(board: &Board, mv: Move, eval: i16, wdl: f32) -> bool {
         random_fen_skip_probability: 0.15,
 
         wdl_filtered: false,
-        wdl_model_params_a: [-51.91819866, 145.18809272, -166.61481017, 281.59570002],
-        wdl_model_params_b: [-24.71724508, 82.92975519, -33.49186286, 52.86407201],
-        ..Default::default()
+
+        wdl_model_params_a: [0.0; 4],
+        wdl_model_params_b: [0.0; 4],
+        material_min: 17,
+        material_max: 78,
+        mom_target: 58,
+        wdl_heuristic_scale: 1.0,
     };
     let mut rng = rng();
     let wdl = match wdl {
@@ -114,33 +125,52 @@ fn filter(board: &Board, mv: Move, eval: i16, wdl: f32) -> bool {
     !default_viri_filter.should_filter(mv, eval as i32, board, wdl, &mut rng)
         && rng.random_bool(piece_count_acceptance(board))
 }
+
+#[path = "pawn_pawn_masked.rs"]
+mod inputs;
+
+use inputs::pawn_pawn_inputs;
+
 fn main() {
+    let inputs = pawn_pawn_inputs::PawnPawnInputs::new(BUCKET_LAYOUT, pawn_pawn_inputs::three_file_band_mask());
+
     let mut trainer = ValueTrainerBuilder::default()
         .dual_perspective()
         .optimiser(Optimiser::default())
-        .inputs(ChessBucketsMirrored::new(BUCKET_LAYOUT))
+        .inputs(inputs)
         .output_buckets(MaterialCount::<OUTPUT_BUCKETS>)
         .save_format(&[
             SavedFormat::id("l0w")
-                .transform(|builder, mut weights| {
-                    let expanded = builder.get("l0f").values.f32().repeat(INPUT_BUCKETS);
-
-                    for (i, &j) in weights.iter_mut().zip(expanded.iter()) {
-                        *i += j;
-                    }
-
-                    weights
+                .transform(|_, weights| {
+                    let pp_threats =
+                        pawn_pawn_inputs::PawnPawnInputs::TOTAL_PAIRS + pawn_pawn_inputs::PawnPawnInputs::TOTAL_THREATS;
+                    let shared = weights[pp_threats * L1..(pp_threats + 768) * L1].repeat(INPUT_BUCKETS);
+                    let bucketed = &weights[(pp_threats + 768) * L1..];
+                    bucketed.iter().zip(shared).map(|(&a, b)| a + b).collect()
                 })
                 .round()
                 .quantise::<i16>(Q0),
+            SavedFormat::id("l0w")
+                .transform(|_, weights| {
+                    let pp_threats =
+                        pawn_pawn_inputs::PawnPawnInputs::TOTAL_PAIRS + pawn_pawn_inputs::PawnPawnInputs::TOTAL_THREATS;
+                    let clip = i8::MAX as f32 / Q0 as f32;
+                    println!(
+                        "{} {}",
+                        weights[0..pp_threats * L1]
+                            .iter()
+                            .copied()
+                            .map(|f| { if f.clamp(-clip, clip) != f { 1 } else { 0 } })
+                            .sum::<i32>(),
+                        pp_threats * L1,
+                    );
+                    weights[0..pp_threats * L1].iter().map(|f| f.clamp(-clip, clip)).collect()
+                })
+                .round()
+                .quantise::<i8>(Q0),
             SavedFormat::id("l0b").round().quantise::<i16>(Q0),
             SavedFormat::id("l1w")
-                .transform(|_, mut weights| {
-                    for i in weights.iter_mut() {
-                        *i /= FT_SHIFT_SCALE * FT_SHIFT_SCALE;
-                    }
-                    weights
-                })
+                .transform(|_, weights| weights.iter().map(|f| f / (FT_SHIFT_SCALE * FT_SHIFT_SCALE)).collect())
                 .round()
                 .quantise::<i8>(Q1),
             SavedFormat::id("l1b").round().quantise::<i32>(Q as i32 * 256),
@@ -150,20 +180,12 @@ fn main() {
             SavedFormat::id("l3b").round().quantise::<i32>((Q as i32).pow(4)),
         ])
         .build_custom(|builder, (stm_inputs, ntm_inputs, output_buckets), target| {
-            // input layer factoriser
-            let l0f = builder.new_weights("l0f", Shape::new(L1, 768), InitSettings::Zeroed);
-            let expanded_factoriser = l0f.repeat(INPUT_BUCKETS);
+            let l0 = builder.new_affine("l0", inputs.num_inputs(), L1);
 
-            // input layer weights
-            let mut l0 = builder.new_affine("l0", 768 * INPUT_BUCKETS, L1);
-            l0.weights = l0.weights + expanded_factoriser;
-
-            // output layer weights
             let l1 = builder.new_affine("l1", L1, OUTPUT_BUCKETS * L2);
             let l2 = builder.new_affine("l2", L2 * 2, OUTPUT_BUCKETS * L3);
             let l3 = builder.new_affine("l3", L3, OUTPUT_BUCKETS);
 
-            // inference
             let stm_hidden = l0.forward(stm_inputs).crelu().pairwise_mul();
             let ntm_hidden = l0.forward(ntm_inputs).crelu().pairwise_mul();
             let l0_out = stm_hidden.concat(ntm_hidden);
@@ -187,7 +209,6 @@ fn main() {
         });
     let l0_clip = OptimiserParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
     trainer.optimiser.set_params_for_weight("l0w", l0_clip);
-    trainer.optimiser.set_params_for_weight("l0f", l0_clip);
 
     let l1_clip = OptimiserParams { max_weight: L1_RANGE, min_weight: -L1_RANGE, ..Default::default() };
     trainer.optimiser.set_params_for_weight("l1w", l1_clip);
@@ -214,7 +235,7 @@ fn main() {
         steps: TrainingSteps {
             batch_size: 16_384 * 8,
             batches_per_superbatch: 6104 / 8,
-            start_superbatch: 1,
+            start_superbatch: 101,
             end_superbatch: SUPERBATCHES_STAGE1,
         },
         wdl_scheduler: wdl::LinearWDL { start: 0.2, end: 0.5 },
@@ -242,7 +263,7 @@ fn main() {
     };
 
     let settings =
-        LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
+        LocalSettings { threads: 32, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
     let binpack_dataset = "/k4/vine_data/vine_37/mixed_data_chonked.vf";
 
@@ -261,7 +282,6 @@ fn main() {
         &settings,
         &ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter)),
     );
-    // trainer.load_from_checkpoint("checkpoints/pawnocchio_pretrain_stage2-200");
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
