@@ -22,6 +22,7 @@ bytemuck = { version = "1.24.0", default-features = false, features = [
     "extern_crate_std",
     "latest_stable_rust",
 ]}
+glob = "0.3.3"
 
 [features]
 cuda = ["bullet-gpu/cuda", "bullet-trainer/cuda"]
@@ -154,3 +155,7 @@ path = "../../examples/pawnocchio_ti.rs"
 [[example]]
 name = "pawnocchio_pp_masked"
 path = "../../examples/pawnocchio_pp_masked.rs"
+
+[[example]]
+name = "pawnocchio_pp_masked_qat"
+path = "../../examples/pawnocchio_pp_masked_qat.rs"

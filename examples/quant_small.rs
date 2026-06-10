@@ -90,7 +90,8 @@ fn main() {
     let L1_SIZE = 1536;
     let L2_SIZE = 16;
     // let dataset_path = "/k4/quant_data/net39_data.binpack";
-    let dataset_path = "/k4/quant_data/net39_net44_shuffled.binpack";
+    // let dataset_path = "/k4/quant_data/net39_net44_shuffled.binpack";
+    let dataset_path = "/k4/quant_data/net39_net44_relabeled_shuffled.binpack";
     // let dataset_path = "/k4/quant_data/vf/net39.vf";
     let initial_lr = 1e-3;
     let final_lr = 1e-3 * 0.3f32.powi(4);
@@ -196,7 +197,7 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
     trainer.optimiser.set_params_for_weight("l1w", stricter_clipping);
 
-    let id = "quant_net60_1536";
+    let id = "quant_net62_1536";
     let stage0 = TrainingSchedule {
         net_id: id.to_string() + "_stage0",
         eval_scale: 400.0,
@@ -254,7 +255,7 @@ fn main() {
         // ViriBinpackLoader::new(path, buffer_size_mb, threads, ViriFilter::Custom(filter))
     };
 
-    trainer.run(&stage0, &settings, &dataloader(dataset_path));
+    // trainer.run(&stage0, &settings, &dataloader(dataset_path));
     trainer.run(&stage1, &settings, &dataloader(dataset_path));
     trainer.run(&stage2, &settings, &dataloader(dataset_path));
 
