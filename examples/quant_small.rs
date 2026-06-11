@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    iter::Enumerate,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use bullet_lib::{
     game::{
@@ -21,14 +24,14 @@ use bullet_lib::{
 };
 
 use bytemuck::zeroed;
-use rand::{Rng, rng};
+use rand::{Rng, rng, seq::SliceRandom};
 use sfbinpack::{
     TrainingDataEntry,
     chess::{r#move::MoveType, piecetype::PieceType},
 };
 use viriformat::{
     chess::{board::Board, chessmove::Move},
-    dataformat::WDL,
+    dataformat::{Filter, WDL},
 };
 
 fn piece_count_acceptance(board: &Board) -> f64 {
@@ -240,24 +243,57 @@ fn main() {
 
     let settings = LocalSettings { threads: 8, test_set: None, output_directory: "checkpoints", batch_queue_size: 128 };
 
-    let dataloader = |path| {
+    let loader = {
         let buffer_size_mb = 16384;
         let threads = 16;
-        fn filter(entry: &TrainingDataEntry) -> bool {
-            entry.ply >= 16
-                && !entry.pos.is_checked(entry.pos.side_to_move())
-                && entry.score.unsigned_abs() <= 16000
-                && entry.mv.mtype() == MoveType::Normal
-                && entry.pos.piece_at(entry.mv.to()).piece_type() == PieceType::None
+        // fn filter(entry: &TrainingDataEntry) -> bool {
+        //     entry.ply >= 16
+        //         && !entry.pos.is_checked(entry.pos.side_to_move())
+        //         && entry.score.unsigned_abs() <= 16000
+        //         && entry.mv.mtype() == MoveType::Normal
+        //         && entry.pos.piece_at(entry.mv.to()).piece_type() == PieceType::None
+        // }
+        fn filter(entry: &viriformat::chess::board::Board, m: Move, eval: i16, wdl: f32) -> bool {
+            const default_viri_filter: Filter = Filter {
+                min_ply: 16,
+                min_pieces: 0,
+                filter_tactical: true,
+                filter_check: true,
+                filter_castling: true,
+                max_eval: 16000,
+                max_eval_incorrectness: u32::MAX,
+                random_fen_skipping: false,
+                random_fen_skip_probability: 0.00,
+
+                wdl_filtered: false,
+
+                wdl_model_params_a: [0.0; 4],
+                wdl_model_params_b: [0.0; 4],
+                material_min: 17,
+                material_max: 78,
+                mom_target: 58,
+                wdl_heuristic_scale: 1.0,
+            };
+            let mut rng = rng();
+
+            !default_viri_filter.should_filter(m, eval, entry, wdl, &mut rng)
         }
 
-        SfBinpackLoader::new(path, buffer_size_mb, threads, filter)
+        let dataset_paths = glob::glob("/k4/quant_data/pgns/vfdata/quant_data_vf_*.vf_evals_relabeled")
+            .expect("successfully found dataset")
+            .map(|f| f.unwrap())
+            .collect::<Vec<_>>();
+        let mut dataset_filenames = dataset_paths.iter().map(|f| f.to_str().unwrap()).collect::<Vec<_>>();
+        dataset_filenames.shuffle(&mut rng());
+        debug_assert!(dataset_filenames.len() == 64);
+        ViriBinpackLoader::new_concat_multiple(&dataset_filenames, 8192, 16, ViriFilter::Custom(filter));
+        // SfBinpackLoader::new(path, buffer_size_mb, threads, filter)
         // ViriBinpackLoader::new(path, buffer_size_mb, threads, ViriFilter::Custom(filter))
     };
 
     // trainer.run(&stage0, &settings, &dataloader(dataset_path));
-    trainer.run(&stage1, &settings, &dataloader(dataset_path));
-    trainer.run(&stage2, &settings, &dataloader(dataset_path));
+    trainer.run(&stage1, &settings, loader);
+    trainer.run(&stage2, &settings, loader);
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
