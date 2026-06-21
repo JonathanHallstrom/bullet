@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{process::exit, sync::atomic::{AtomicU64, Ordering}};
 
 use bullet_lib::{
     game::{inputs::SparseInputType, outputs::MaterialCount},
@@ -236,8 +236,9 @@ fn main() {
             let l3 = builder.new_affine("l3", L3, OUTPUT_BUCKETS);
 
             // inference
-            let stm_hidden = l0.forward(stm_inputs).crelu().pairwise_mul();
-            let ntm_hidden = l0.forward(ntm_inputs).crelu().pairwise_mul();
+            let ft = |input, start, end| l0.slice(start, end).forward(input).crelu();
+            let stm_hidden = ft(stm_inputs, 0, L1 / 2) * ft(stm_inputs, L1 / 2, L1);
+            let ntm_hidden = ft(ntm_inputs, 0, L1 / 2) * ft(ntm_inputs, L1 / 2, L1);
             let l0_out = stm_hidden.concat(ntm_hidden);
 
             // let ones_l1_vec = builder.new_constant(Shape::new(1, L1), &[1.0 / L1 as f32; L1]);
@@ -288,12 +289,7 @@ fn main() {
     let schedule = TrainingSchedule {
         net_id: NET_NAME.to_string() + "_main",
         eval_scale: SCALE as f32,
-        steps: TrainingSteps {
-            batch_size,
-            batches_per_superbatch,
-            start_superbatch: 775 + 1,
-            end_superbatch: SUPERBATCHES,
-        },
+        steps: TrainingSteps { batch_size, batches_per_superbatch, start_superbatch: 1, end_superbatch: SUPERBATCHES },
         wdl_scheduler: wdl::Warmup { inner: wdl::ConstantWDL { value: 1.0 }, warmup_batches },
         lr_scheduler: lr::Warmup {
             inner: lr::LinearDecayLR { initial_lr: 1e-5, final_lr: 1e-7, final_superbatch: SUPERBATCHES },
@@ -301,24 +297,42 @@ fn main() {
         },
         save_rate: 25,
     };
+    let schedule_retrain = TrainingSchedule {
+        net_id: NET_NAME.to_string() + "_retrain",
+        eval_scale: SCALE as f32,
+        steps: TrainingSteps { batch_size, batches_per_superbatch, start_superbatch: 1, end_superbatch: SUPERBATCHES },
+        wdl_scheduler: wdl::Warmup { inner: wdl::ConstantWDL { value: 1.0 }, warmup_batches },
+        lr_scheduler: lr::Warmup {
+            inner: lr::LinearDecayLR { initial_lr: 1e-6, final_lr: 1e-7, final_superbatch: SUPERBATCHES },
+            warmup_batches: warmup_batches,
+        },
+        save_rate: 100,
+    };
 
     let settings =
-        LocalSettings { threads: 32, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
+        LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
     // let binpack_dataset = "/k4/vine_data/vine_43/mixed_data_big.vf";
     // let loader = ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter));
 
-    let dataset_paths = glob::glob("/k4/vine_data/vine_43/mixed_data_big_shuffle/mixed_data_big_split_part2*.vf")
+    let dataset_paths = 
+    // glob::glob("/k4/vine_data/vine_43/mixed_data_big_shuffle/mixed_data_big_split_part2*.vf")
+    // glob::glob("/k4/pawnocchio_data2/2026_06_14/**/*.vf")
+    // glob::glob("/k4/pawnocchio_data2/2026_06_14/shuf/mix3*")
+    glob::glob("/k4/vine_data/vine_43/mixed_data_bigger_shuffle/*bigger*")
         .expect("successfully found dataset")
         .map(|f| f.unwrap())
         .collect::<Vec<_>>();
     let mut dataset_filenames = dataset_paths.iter().map(|f| f.to_str().unwrap()).collect::<Vec<_>>();
     dataset_filenames.shuffle(&mut rng());
-    debug_assert!(dataset_filenames.len() == 1024);
+    if dataset_filenames.len() != 1024 {
+        println!("error: wrong file count");
+        exit(1);
+    }
     let loader = ViriBinpackLoader::new_concat_multiple(&dataset_filenames, 8192, 16, ViriFilter::Custom(filter));
 
-    trainer.load_from_checkpoint("checkpoints/pawnocchio_chonker_pp_main-775");
-    trainer.run(&schedule, &settings, &loader);
+    trainer.load_from_checkpoint("checkpoints/pawnocchio_chonker_pp_main-1000");
+    trainer.run(&schedule_retrain, &settings, &loader);
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",

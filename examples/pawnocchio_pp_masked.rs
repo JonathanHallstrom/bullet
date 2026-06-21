@@ -24,13 +24,13 @@ use viriformat::{
 
 type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
-const NET_NAME: &str = "pawnocchio_3wide_32_warmup";
+const NET_NAME: &str = "pawnocchio_more_finetune";
 
 const SUPERBATCHES_STAGE0: usize = 100;
-const SUPERBATCHES_STAGE1: usize = 800;
-const SUPERBATCHES_STAGE2: usize = 200;
+const SUPERBATCHES_STAGE1: usize = 600;
+const SUPERBATCHES_STAGE2: usize = 400;
 const L1: usize = 768;
-const L2: usize = 32;
+const L2: usize = 16;
 const L3: usize = 32;
 const SCALE: i32 = 400;
 const Q0: i16 = 255;
@@ -186,8 +186,9 @@ fn main() {
             let l2 = builder.new_affine("l2", L2 * 2, OUTPUT_BUCKETS * L3);
             let l3 = builder.new_affine("l3", L3, OUTPUT_BUCKETS);
 
-            let stm_hidden = l0.forward(stm_inputs).crelu().pairwise_mul();
-            let ntm_hidden = l0.forward(ntm_inputs).crelu().pairwise_mul();
+            let ft = |input, start, end| l0.slice(start, end).forward(input).crelu();
+            let stm_hidden = ft(stm_inputs, 0, L1 / 2) * ft(stm_inputs, L1 / 2, L1);
+            let ntm_hidden = ft(ntm_inputs, 0, L1 / 2) * ft(ntm_inputs, L1 / 2, L1);
             let l0_out = stm_hidden.concat(ntm_hidden);
 
             let ones_l1_vec = builder.new_constant(Shape::new(1, L1), &[1.0 / L1 as f32; L1]);

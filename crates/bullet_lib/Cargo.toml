@@ -16,7 +16,7 @@ bullet-trainer = { workspace = true }
 bulletformat = "1.8.0"
 montyformat = "0.9.2"
 sfbinpack = "0.6.0"
-viriformat = { workspace = true }
+viriformat = "2.0.1"
 rand = "0.9"
 bytemuck = { version = "1.24.0", default-features = false, features = [
     "extern_crate_std",
@@ -62,32 +62,16 @@ name = "4_multi_layer"
 path = "../../examples/progression/4_multi_layer.rs"
 
 [[example]]
-name = "mirrored"
-path = "../../examples/mirrored.rs"
-
-[[example]]
-name = "input_bucketed"
-path = "../../examples/input_bucketed.rs"
-
-[[example]]
-name = "prelude"
-path = "../../examples/prelude.rs"
-
-[[example]]
-name = "turbulence"
-path = "../../examples/turbulence.rs"
-
-[[example]]
-name = "stockdory"
-path = "../../examples/sd.rs"
-
-[[example]]
 name = "vine"
 path = "../../examples/vine.rs"
 
 [[example]]
-name = "vine2"
-path = "../../examples/vine2.rs"
+name = "vine_rec"
+path = "../../examples/vine_rec.rs"
+
+[[example]]
+name = "vine_rec_base"
+path = "../../examples/vine_rec_base.rs"
 
 [[example]]
 name = "input_bucketed_staged"
@@ -98,20 +82,12 @@ name = "512_testnet"
 path = "../../examples/512_testnet.rs"
 
 [[example]]
-name = "relabel"
-path = "../../examples/extra/relabel.rs"
-
-[[example]]
 name = "kirill"
 path = "../../examples/kirill.rs"
 
 [[example]]
 name = "kirill_small"
 path = "../../examples/kirill_small.rs"
-
-[[example]]
-name = "aether"
-path = "../../examples/aether.rs"
 
 [[example]]
 name = "quant_small"
@@ -134,8 +110,20 @@ name = "pawnocchio_chonker_pp"
 path = "../../examples/pawnocchio_chonker_pp.rs"
 
 [[example]]
+name = "pawnocchio_ti"
+path = "../../examples/pawnocchio_ti.rs"
+
+[[example]]
+name = "pawnocchio_pp_masked"
+path = "../../examples/pawnocchio_pp_masked.rs"
+
+[[example]]
 name = "eleanor"
 path = "../../examples/eleanor.rs"
+
+[[example]]
+name = "heimdall"
+path = "../../examples/heimdall.rs"
 
 [[example]]
 name = "fti"
@@ -146,17 +134,5 @@ name = "sti"
 path = "../../examples/yukari-sti.rs"
 
 [[example]]
-name = "vine_mixer"
-path = "../../examples/vine_mixer.rs"
-
-[[example]]
-name = "pawnocchio_ti"
-path = "../../examples/pawnocchio_ti.rs"
-
-[[example]]
-name = "pawnocchio_pp_masked"
-path = "../../examples/pawnocchio_pp_masked.rs"
-
-[[example]]
-name = "pawnocchio_pp_masked_qat"
-path = "../../examples/pawnocchio_pp_masked_qat.rs"
+name = "cw_relabel"
+path = "../../examples/cw_relabel.rs"
