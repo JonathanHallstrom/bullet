@@ -63,31 +63,6 @@ fn piece_count_acceptance(board: &Board) -> f64 {
     acceptance.clamp(0., 1.)
 }
 
-fn filter(board: &Board, mv: Move, eval: i16, wdl: f32) -> bool {
-    let default_viri_filter = viriformat::dataformat::Filter {
-        min_pieces: 4,
-        min_ply: 16,
-        max_eval: 16000,
-        filter_check: true,
-        filter_tactical: true,
-        filter_castling: true,
-        random_fen_skipping: false,
-        random_fen_skip_probability: 0.,
-        ..Default::default()
-    };
-
-    let mut rng = rng();
-    let wdl = match wdl {
-        1.0 => WDL::Win,
-        0.5 => WDL::Draw,
-        0.0 => WDL::Loss,
-        _ => unreachable!(),
-    };
-
-    !default_viri_filter.should_filter(mv, eval as i32, board, wdl, &mut rng)
-    // && rng.random_bool(piece_count_acceptance(board))
-}
-
 fn main() {
     // hyperparams to fiddle with
     let L1_SIZE = 1536;
@@ -174,8 +149,9 @@ fn main() {
             let l3 = builder.new_affine("l3", 32, NUM_OUTPUT_BUCKETS);
 
             // inference
-            let stm_hidden = l0.forward(stm_inputs).crelu().pairwise_mul();
-            let ntm_hidden = l0.forward(ntm_inputs).crelu().pairwise_mul();
+            let ft = |input, start, end| l0.slice(start, end).forward(input).crelu();
+            let stm_hidden = ft(stm_inputs, 0, L1_SIZE / 2) * ft(stm_inputs, L1_SIZE / 2, L1_SIZE);
+            let ntm_hidden = ft(ntm_inputs, 0, L1_SIZE / 2) * ft(ntm_inputs, L1_SIZE / 2, L1_SIZE);
             let hl1 = stm_hidden.concat(ntm_hidden);
 
             let l1_ones: Vec<f32> = vec![1.0 / L1_SIZE as f32; L1_SIZE];
@@ -200,7 +176,7 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
     trainer.optimiser.set_params_for_weight("l1w", stricter_clipping);
 
-    let id = "quant_net62_1536";
+    let id = "quant_net64_1536";
     let stage0 = TrainingSchedule {
         net_id: id.to_string() + "_stage0",
         eval_scale: 400.0,
@@ -275,8 +251,15 @@ fn main() {
                 wdl_heuristic_scale: 1.0,
             };
             let mut rng = rng();
+            let wdl = match wdl {
+                1.0 => WDL::Win,
+                0.5 => WDL::Draw,
+                0.0 => WDL::Loss,
+                _ => unreachable!(),
+            };
 
-            !default_viri_filter.should_filter(m, eval, entry, wdl, &mut rng)
+            !default_viri_filter.should_filter(m, eval.into(), entry, wdl, &mut rng)
+                && rng.random_bool(piece_count_acceptance(entry))
         }
 
         let dataset_paths = glob::glob("/k4/quant_data/pgns/vfdata/quant_data_vf_*.vf_evals_relabeled")
@@ -286,14 +269,14 @@ fn main() {
         let mut dataset_filenames = dataset_paths.iter().map(|f| f.to_str().unwrap()).collect::<Vec<_>>();
         dataset_filenames.shuffle(&mut rng());
         debug_assert!(dataset_filenames.len() == 64);
-        ViriBinpackLoader::new_concat_multiple(&dataset_filenames, 8192, 16, ViriFilter::Custom(filter));
+        ViriBinpackLoader::new_concat_multiple(&dataset_filenames, 8192, 16, ViriFilter::Custom(filter))
         // SfBinpackLoader::new(path, buffer_size_mb, threads, filter)
         // ViriBinpackLoader::new(path, buffer_size_mb, threads, ViriFilter::Custom(filter))
     };
 
     // trainer.run(&stage0, &settings, &dataloader(dataset_path));
-    trainer.run(&stage1, &settings, loader);
-    trainer.run(&stage2, &settings, loader);
+    trainer.run(&stage1, &settings, &loader);
+    trainer.run(&stage2, &settings, &loader);
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
