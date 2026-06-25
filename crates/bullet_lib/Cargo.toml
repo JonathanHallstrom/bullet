@@ -34,6 +34,10 @@ name = "simple"
 path = "../../examples/simple.rs"
 
 [[example]]
+name = "zander"
+path = "../../examples/zander.rs"
+
+[[example]]
 name = "test1"
 path = "../../examples/tests/test1.rs"
 

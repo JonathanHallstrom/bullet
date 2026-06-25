@@ -24,11 +24,11 @@ use viriformat::{
 
 type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
-const NET_NAME: &str = "pawnocchio_more_finetune";
+const NET_NAME: &str = "pawnocchio_new_data_new_chonker";
 
 const SUPERBATCHES_STAGE0: usize = 100;
-const SUPERBATCHES_STAGE1: usize = 600;
-const SUPERBATCHES_STAGE2: usize = 400;
+const SUPERBATCHES_STAGE1: usize = 800;
+const SUPERBATCHES_STAGE2: usize = 200;
 const L1: usize = 768;
 const L2: usize = 16;
 const L3: usize = 32;
@@ -260,22 +260,28 @@ fn main() {
         save_rate: 100,
     };
 
-    let dataset_paths = glob::glob("/k4/vine_data/vine_37/mixed_data_shuffle/*_evals_relabeled")
-        .expect("successfully found dataset")
-        .map(|f| f.unwrap())
-        .collect::<Vec<_>>();
-    let mut dataset_filenames = dataset_paths.iter().map(|f| f.to_str().unwrap()).collect::<Vec<_>>();
-    dataset_filenames.shuffle(&mut rng());
-    debug_assert!(dataset_filenames.len() == 16);
-    let loader = ViriBinpackLoader::new_concat_multiple(&dataset_filenames, 8192, 16, ViriFilter::Custom(filter));
+    let dataset = |g| {
+        let paths = glob::glob(g).expect("successfully found dataset").map(|f| f.unwrap()).collect::<Vec<_>>();
+        let mut filenames = paths.iter().map(|f| f.to_str().unwrap().to_owned()).collect::<Vec<_>>();
+        filenames.shuffle(&mut rng());
+        filenames
+    };
+    let full_dataset = dataset("/k4/vine_data/vine_37/mixed_data_shuffle/new/*.vf");
+    let finetune_dataset = dataset("/k4/pawnocchio_data2/2026_06_14/shuf/*evals_relabeled");
+    debug_assert!(full_dataset.len() == 1024);
+    let loader = |dataset: &[String]| {
+        let strs: Vec<&str> = dataset.iter().map(|s| s.as_str()).collect();
+        ViriBinpackLoader::new_concat_multiple(&strs, 8192, 16, ViriFilter::Custom(filter))
+    };
     let settings =
         LocalSettings { threads: 32, test_set: None, output_directory: "checkpoints", batch_queue_size: 1024 };
 
     // let binpack_dataset = "/k4/vine_data/vine_37/mixed_data_chonked.vf";
 
-    trainer.run(&stage0_schedule, &settings, &loader);
-    trainer.run(&stage1_schedule, &settings, &loader);
-    trainer.run(&stage2_schedule, &settings, &loader);
+    // trainer.run(&stage0_schedule, &settings, &loader(&full_dataset));
+    // trainer.run(&stage1_schedule, &settings, &loader(&full_dataset));
+    trainer.load_from_checkpoint("checkpoints/pawnocchio_new_data_new_chonker_stage1-800/");
+    trainer.run(&stage2_schedule, &settings, &loader(&finetune_dataset));
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
