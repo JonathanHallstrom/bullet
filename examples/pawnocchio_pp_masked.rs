@@ -1,3 +1,6 @@
+// a lot of good stuff in here from the various schedules in https://github.com/Yoshie2000/bullet/tree/plenty/examples/plenty
+// and piece count filtering from https://github.com/brunocodutra/cinder/blob/master/bin/trainer.rs
+
 use std::cell::{Cell, RefCell};
 
 use bullet_lib::{
