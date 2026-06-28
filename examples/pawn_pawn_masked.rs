@@ -10,12 +10,6 @@ fn map_bb<F: FnMut(usize)>(mut bb: u64, mut f: F) {
 }
 
 fn flip_horizontal(mut bb: u64) -> u64 {
-    // const K1: u64 = 0x5555555555555555;
-    // const K2: u64 = 0x3333333333333333;
-    // const K4: u64 = 0x0f0f0f0f0f0f0f0f;
-    // bb = ((bb >> 1) & K1) | ((bb & K1) << 1);
-    // bb = ((bb >> 2) & K2) | ((bb & K2) << 2);
-    // ((bb >> 4) & K4) | ((bb & K4) << 4)
     bb.swap_bytes().reverse_bits()
 }
 

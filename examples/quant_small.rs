@@ -275,8 +275,9 @@ fn main() {
     };
 
     // trainer.run(&stage0, &settings, &dataloader(dataset_path));
-    trainer.run(&stage1, &settings, &loader);
-    trainer.run(&stage2, &settings, &loader);
+    // trainer.run(&stage1, &settings, &loader);
+    // trainer.run(&stage2, &settings, &loader);
+    trainer.load_from_checkpoint("checkpoints/quant_net63_1536_stage2-200");
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",

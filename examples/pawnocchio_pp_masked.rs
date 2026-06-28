@@ -4,10 +4,13 @@
 use std::cell::{Cell, RefCell};
 
 use bullet_lib::{
-    game::{inputs::SparseInputType, outputs::MaterialCount},
+    game::{
+        inputs::{SparseInputType, get_num_buckets},
+        outputs::MaterialCount,
+    },
     nn::{
         Shape,
-        optimiser::{AdamW, AdamWParams},
+        optimiser::{AdamW, AdamWParams, Ranger, RangerParams},
     },
     trainer::{
         save::SavedFormat,
@@ -27,19 +30,19 @@ use viriformat::{
 
 type Optimiser = AdamW;
 type OptimiserParams = AdamWParams;
-const NET_NAME: &str = "pawnocchio_new_data_new_chonker";
+const NET_NAME: &str = "pawnocchio_1024";
 
 const SUPERBATCHES_STAGE0: usize = 100;
 const SUPERBATCHES_STAGE1: usize = 800;
 const SUPERBATCHES_STAGE2: usize = 200;
-const L1: usize = 768;
+const L1: usize = 1024;
 const L2: usize = 16;
 const L3: usize = 32;
 const SCALE: i32 = 400;
 const Q0: i16 = 255;
 const Q1: i16 = 128;
 const Q: i16 = 64;
-const INPUT_BUCKETS: usize = 16;
+const INPUT_BUCKETS: usize = get_num_buckets(&BUCKET_LAYOUT);
 const OUTPUT_BUCKETS: usize = 8;
 
 const FT_SHIFT: usize = 8;
@@ -51,12 +54,20 @@ const L1_RANGE: f32 = I8_RANGE * FT_SHIFT_SCALE * FT_SHIFT_SCALE;
 const BUCKET_LAYOUT: [usize; 32] = [
      0,  1,  2,  3,
      4,  5,  6,  7,
-     8,  8,  9,  9,
-    10, 10, 11, 11,
-    12, 12, 13, 13,
-    12, 12, 13, 13,
-    14, 14, 15, 15,
-    14, 14, 15, 15,
+     8,  9, 10, 11,
+    12, 13, 14, 15,
+    16, 17, 18, 19,
+    20, 21, 22, 23,
+    24, 25, 26, 27,
+    28, 29, 30, 31,
+    //  0,  1,  2,  3,
+    //  4,  5,  6,  7,
+    //  8,  8,  9,  9,
+    // 10, 10, 11, 11,
+    // 12, 12, 13, 13,
+    // 12, 12, 13, 13,
+    // 14, 14, 15, 15,
+    // 14, 14, 15, 15,
 ];
 
 fn piece_count_acceptance(board: &Board) -> f64 {
@@ -281,9 +292,8 @@ fn main() {
 
     // let binpack_dataset = "/k4/vine_data/vine_37/mixed_data_chonked.vf";
 
-    // trainer.run(&stage0_schedule, &settings, &loader(&full_dataset));
-    // trainer.run(&stage1_schedule, &settings, &loader(&full_dataset));
-    trainer.load_from_checkpoint("checkpoints/pawnocchio_new_data_new_chonker_stage1-800/");
+    trainer.run(&stage0_schedule, &settings, &loader(&full_dataset));
+    trainer.run(&stage1_schedule, &settings, &loader(&full_dataset));
     trainer.run(&stage2_schedule, &settings, &loader(&finetune_dataset));
 
     for fen in [

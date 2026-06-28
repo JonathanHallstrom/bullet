@@ -1,12 +1,17 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::cell::{Cell, RefCell};
 
 use bullet_lib::{
-    game::{inputs::ChessBucketsMirrored, outputs::MaterialCount},
-    nn::optimiser::AdamW,
+    game::{
+        inputs::{ChessBucketsMirrored, SparseInputType},
+        outputs::MaterialCount,
+    },
+    nn::{
+        Shape,
+        optimiser::{AdamW, AdamWParams, Ranger, RangerParams},
+    },
     trainer::{
         save::SavedFormat,
-        schedule,
-        schedule::{TrainingSchedule, TrainingSteps},
+        schedule::{TrainingSchedule, TrainingSteps, lr, wdl},
         settings::LocalSettings,
     },
     value::{
@@ -14,23 +19,21 @@ use bullet_lib::{
         loader::{ViriBinpackLoader, viribinpack::ViriFilter},
     },
 };
-use bytemuck::zeroed;
-use rand::{Rng, rng};
+use rand::{Rng, rng, seq::SliceRandom};
+use std::sync::atomic::{AtomicU64, Ordering};
 use viriformat::{
     chess::{board::Board, chessmove::Move},
     dataformat::{Filter, WDL},
 };
 type Optimiser = AdamW;
-const NET_NAME: &'static str = "512_testnet_vine_01_13_2";
+const NET_NAME: &'static str = "512_testnet_unscaled";
 
-const SUPERBATCHES_STAGE1: usize = 50;
+const SUPERBATCHES_STAGE1: usize = 200;
 const HIDDEN_SIZE: usize = 512;
 const SCALE: i32 = 400;
 const QA: i16 = 255;
 const QB: i16 = 64;
 const NUM_OUTPUT_BUCKETS: usize = 8;
-
-use std::cell::RefCell;
 
 fn piece_count_acceptance(board: &Board) -> f64 {
     #[rustfmt::skip]
@@ -48,7 +51,6 @@ fn piece_count_acceptance(board: &Board) -> f64 {
         0.022727271053, 0.020641545085, 0.018411966423,
     ];
 
-    // Define thread-local storage with RefCells for interior mutability
     thread_local! {
         static PIECE_COUNT_STATS: RefCell<[u64; 33]> = RefCell::new([0; 33]);
         static PIECE_COUNT_TOTAL: RefCell<u64> = RefCell::new(0);
@@ -56,7 +58,6 @@ fn piece_count_acceptance(board: &Board) -> f64 {
 
     let pc = board.pieces.occupied().count() as usize;
 
-    // Access thread-local variables
     let (count, total) = PIECE_COUNT_STATS.with(|stats_cell| {
         PIECE_COUNT_TOTAL.with(|total_cell| {
             let mut stats = stats_cell.borrow_mut();
@@ -72,7 +73,6 @@ fn piece_count_acceptance(board: &Board) -> f64 {
 
     let frequency = count as f64 / total as f64;
 
-    // Calculate the acceptance probability
     let acceptance = 0.5 * DESIRED_DISTRIBUTION[pc] / frequency;
     acceptance.clamp(0., 1.)
 }
@@ -139,9 +139,9 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: SUPERBATCHES_STAGE1,
         },
-        wdl_scheduler: schedule::wdl::ConstantWDL { value: 0.75 },
-        lr_scheduler: schedule::lr::Warmup {
-            inner: schedule::lr::CosineDecayLR {
+        wdl_scheduler: wdl::ConstantWDL { value: 0.75 },
+        lr_scheduler: lr::Warmup {
+            inner: lr::CosineDecayLR {
                 initial_lr: 0.001,
                 final_lr: 0.001 * f32::powi(0.3, 4),
                 final_superbatch: SUPERBATCHES_STAGE1,
@@ -163,7 +163,19 @@ fn main() {
     let binpack_dataset = "/home/jonathanhallstrom/dev/rust/bullet/vine_40/vine_40_10m.vf_relabeled";
     let binpack_dataset = "/home/jonathanhallstrom/dev/rust/bullet/vine_42/vine_42_10m.vf_relabeled";
 
-    trainer.run(&schedule, &settings, &ViriBinpackLoader::new(binpack_dataset, 16384, 24, ViriFilter::Custom(filter)));
+    let dataset = |g| {
+        let paths = glob::glob(g).expect("successfully found dataset").map(|f| f.unwrap()).collect::<Vec<_>>();
+        let mut filenames = paths.iter().map(|f| f.to_str().unwrap().to_owned()).collect::<Vec<_>>();
+        filenames.shuffle(&mut rng());
+        filenames
+    };
+    let binpack_dataset = dataset("/k4/pawnocchio_data2/2026_06_14/unscaled/*.vf");
+    let loader = |dataset: &[String]| {
+        let strs: Vec<&str> = dataset.iter().map(|s| s.as_str()).collect();
+        ViriBinpackLoader::new_concat_multiple(&strs, 8192, 16, ViriFilter::Custom(filter))
+    };
+
+    trainer.run(&schedule, &settings, &loader(&binpack_dataset));
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
