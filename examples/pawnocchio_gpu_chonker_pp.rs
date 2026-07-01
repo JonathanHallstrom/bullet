@@ -37,13 +37,7 @@ const DIM: usize = 1024;
 const SCALE: i32 = 400;
 const Q0: i16 = 255;
 const Q1: i16 = 128;
-const Q: i16 = 64;
 const INPUT_BUCKETS: usize = 4;
-
-const FT_SHIFT: usize = 8;
-const FT_SHIFT_SCALE: f32 = Q0 as f32 / ((1 << FT_SHIFT) as f32);
-const I8_RANGE: f32 = i8::MAX as f32 / (Q1 as f32);
-const L1_RANGE: f32 = I8_RANGE * FT_SHIFT_SCALE * FT_SHIFT_SCALE;
 
 static FILTER_TOTAL: AtomicU64 = AtomicU64::new(0);
 static FILTER_KEPT: AtomicU64 = AtomicU64::new(0);
@@ -210,20 +204,14 @@ fn main() {
                 .round()
                 .quantise::<i8>(Q0),
             SavedFormat::id("l0b").round().quantise::<i16>(Q0),
-            SavedFormat::id("l1w")
-                .transform(|_, mut weights| {
-                    for i in weights.iter_mut() {
-                        *i /= FT_SHIFT_SCALE * FT_SHIFT_SCALE;
-                    }
-                    weights
-                })
-                .round()
-                .quantise::<i8>(Q1),
-            SavedFormat::id("l1b").round().quantise::<i32>(Q as i32 * 256),
-            SavedFormat::id("l2w").round().quantise::<i32>(Q as i32),
-            SavedFormat::id("l2b").round().quantise::<i32>((Q as i32).pow(3)),
-            SavedFormat::id("l3w").round().quantise::<i32>(Q as i32),
-            SavedFormat::id("l3b").round().quantise::<i32>((Q as i32).pow(4)),
+            SavedFormat::id("l1w").round().quantise::<i8>(Q1),
+            SavedFormat::id("l1b"),
+            SavedFormat::id("l2w"),
+            SavedFormat::id("l2b"),
+            SavedFormat::id("l3w"),
+            SavedFormat::id("l3b"),
+            SavedFormat::id("l4w"),
+            SavedFormat::id("l4b"),
         ])
         .build_custom(|builder, (stm_inputs, ntm_inputs), target| {
             // input layer weights (factoriser is baked into the input feature layout)
@@ -255,11 +243,9 @@ fn main() {
             let ft = |input, start, end| forward_slice(l0, input, start, end).crelu();
             let stm_hidden = ft(stm_inputs, 0, DIM / 2) * ft(stm_inputs, DIM / 2, DIM);
             let ntm_hidden = ft(ntm_inputs, 0, DIM / 2) * ft(ntm_inputs, DIM / 2, DIM);
+            // let stm_hidden = swiglu_forward(l0, stm_inputs, DIM / 2);
+            // let ntm_hidden = swiglu_forward(l0, stm_inputs, DIM / 2);
             let x = stm_hidden.concat(ntm_hidden);
-
-            // let ones_l1_vec = builder.new_constant(Shape::new(1, L1), &[1.0 / L1 as f32; L1]);
-            // let l0_out_norm = ones_l1_vec.matmul(l0_out);
-
             let x = x + swiglu_forward(l1, x, DIM);
             let x = x + swiglu_forward(l2, x, DIM);
             let x = x + swiglu_forward(l3, x, DIM);
@@ -268,15 +254,11 @@ fn main() {
 
             let loss = out.sigmoid().squared_error(target);
 
-            // let loss = loss + 0.005 * l0_out_norm;
-
             (out, loss)
         });
-    let l0_clip = OptimiserParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
-    trainer.optimiser.set_params_for_weight("l0w", l0_clip);
-
-    let l1_clip = OptimiserParams { max_weight: L1_RANGE, min_weight: -L1_RANGE, ..Default::default() };
-    trainer.optimiser.set_params_for_weight("l1w", l1_clip);
+    let clip = OptimiserParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
+    trainer.optimiser.set_params_for_weight("l0w", clip);
+    trainer.optimiser.set_params_for_weight("l1w", clip);
 
     let batch_size = 65536;
     let batches_per_superbatch = 100_000_000usize.div_ceil(batch_size);
