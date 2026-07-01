@@ -1,4 +1,7 @@
-use std::{process::exit, sync::atomic::{AtomicU64, Ordering}};
+use std::{
+    process::exit,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use bullet_lib::{
     game::{inputs::SparseInputType, outputs::MaterialCount},
@@ -315,11 +318,10 @@ fn main() {
     // let binpack_dataset = "/k4/vine_data/vine_43/mixed_data_big.vf";
     // let loader = ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter));
 
-    let dataset_paths = 
     // glob::glob("/k4/vine_data/vine_43/mixed_data_big_shuffle/mixed_data_big_split_part2*.vf")
     // glob::glob("/k4/pawnocchio_data2/2026_06_14/**/*.vf")
     // glob::glob("/k4/pawnocchio_data2/2026_06_14/shuf/mix3*")
-    glob::glob("/k4/vine_data/vine_43/mixed_data_bigger_shuffle/*bigger*")
+    let dataset_paths = glob::glob("/k4/vine_data/vine_43/mixed_data_bigger_shuffle/*bigger*")
         .expect("successfully found dataset")
         .map(|f| f.unwrap())
         .collect::<Vec<_>>();

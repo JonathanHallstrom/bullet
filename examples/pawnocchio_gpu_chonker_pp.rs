@@ -1,9 +1,13 @@
-use std::{process::exit, sync::atomic::{AtomicU64, Ordering}};
+use std::{
+    process::exit,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use bullet_lib::{
     game::{inputs::SparseInputType, outputs::MaterialCount},
     nn::{
-        ModelNode, Shape, optimiser::{AdamW, AdamWParams}
+        Affine, ModelNode, Shape,
+        optimiser::{AdamW, AdamWParams},
     },
     trainer::{
         save::SavedFormat,
@@ -29,10 +33,7 @@ const NET_NAME: &'static str = "pawnocchio_gpu_chonker_pp";
 
 const PRETRAIN_SUPERBATCHES: usize = 100;
 const SUPERBATCHES: usize = 1000;
-const L1: usize = 4096;
-const L2: usize = 1024;
-const L3: usize = 1024;
-const L4: usize = 1024;
+const DIM: usize = 1024;
 const SCALE: i32 = 400;
 const Q0: i16 = 255;
 const Q1: i16 = 128;
@@ -184,8 +185,8 @@ fn main() {
                 .transform(|_, weights| {
                     let pp_threats =
                         pawn_pawn_inputs::PawnPawnInputs::TOTAL_PAIRS + pawn_pawn_inputs::PawnPawnInputs::TOTAL_THREATS;
-                    let shared = weights[pp_threats * L1..(pp_threats + 768) * L1].repeat(INPUT_BUCKETS);
-                    let bucketed = &weights[(pp_threats + 768) * L1..];
+                    let shared = weights[pp_threats * DIM..(pp_threats + 768) * DIM].repeat(INPUT_BUCKETS);
+                    let bucketed = &weights[(pp_threats + 768) * DIM..];
                     bucketed.iter().zip(shared).map(|(&a, b)| a + b).collect()
                 })
                 .round()
@@ -197,14 +198,14 @@ fn main() {
                     let clip = i8::MAX as f32 / Q0 as f32;
                     println!(
                         "{} {}",
-                        weights[0..pp_threats * L1]
+                        weights[0..pp_threats * DIM]
                             .iter()
                             .copied()
                             .map(|f| { if f.clamp(-clip, clip) != f { 1 } else { 0 } })
                             .sum::<i32>(),
-                        pp_threats * L1,
+                        pp_threats * DIM,
                     );
-                    weights[0..pp_threats * L1].iter().map(|f| f.clamp(-clip, clip)).collect()
+                    weights[0..pp_threats * DIM].iter().map(|f| f.clamp(-clip, clip)).collect()
                 })
                 .round()
                 .quantise::<i8>(Q0),
@@ -226,30 +227,42 @@ fn main() {
         ])
         .build_custom(|builder, (stm_inputs, ntm_inputs), target| {
             // input layer weights (factoriser is baked into the input feature layout)
-            let l0 = builder.new_affine("l0", inputs.num_inputs(), L1);
+            let l0 = builder.new_affine("l0", inputs.num_inputs(), DIM);
 
             // output layer weights
-            let l1 = builder.new_affine("l1", L1, L2);
-            let l2 = builder.new_affine("l2", L2, L3);
-            let l3 = builder.new_affine("l3", L3, L4);
-            let l4 = builder.new_affine("l4", L4, 1);
+            let l1 = builder.new_affine("l1", DIM, DIM * 2);
+            let l2 = builder.new_affine("l2", DIM, DIM * 2);
+            let l3 = builder.new_affine("l3", DIM, DIM * 2);
+            let l4 = builder.new_affine("l4", DIM, 1);
 
-            fn activate<'a>(x: ModelNode<'a>) -> ModelNode<'a> {
+            fn swish<'a>(x: ModelNode<'a>) -> ModelNode<'a> {
                 x * x.sigmoid()
             }
 
+            fn swiglu<'a>(v: ModelNode<'a>, g: ModelNode<'a>) -> ModelNode<'a> {
+                v * swish(g)
+            }
+
+            fn forward_slice<'a>(w: Affine<'a>, input: ModelNode<'a>, start: usize, end: usize) -> ModelNode<'a> {
+                w.slice(start, end).forward(input)
+            }
+
+            fn swiglu_forward<'a>(w: Affine<'a>, x: ModelNode<'a>, size: usize) -> ModelNode<'a> {
+                swiglu(forward_slice(w, x, 0, size), forward_slice(w, x, size, size * 2))
+            }
+
             // inference
-            let ft = |input, start, end| l0.slice(start, end).forward(input).crelu();
-            let stm_hidden = ft(stm_inputs, 0, L1 / 2) * ft(stm_inputs, L1 / 2, L1);
-            let ntm_hidden = ft(ntm_inputs, 0, L1 / 2) * ft(ntm_inputs, L1 / 2, L1);
+            let ft = |input, start, end| forward_slice(l0, input, start, end).crelu();
+            let stm_hidden = ft(stm_inputs, 0, DIM / 2) * ft(stm_inputs, DIM / 2, DIM);
+            let ntm_hidden = ft(ntm_inputs, 0, DIM / 2) * ft(ntm_inputs, DIM / 2, DIM);
             let x = stm_hidden.concat(ntm_hidden);
 
             // let ones_l1_vec = builder.new_constant(Shape::new(1, L1), &[1.0 / L1 as f32; L1]);
             // let l0_out_norm = ones_l1_vec.matmul(l0_out);
 
-            let x = activate(l1.forward(x));
-            let x = x + activate(l2.forward(x));
-            let x = x + activate(l3.forward(x));
+            let x = x + swiglu_forward(l1, x, DIM);
+            let x = x + swiglu_forward(l2, x, DIM);
+            let x = x + swiglu_forward(l3, x, DIM);
 
             let out = l4.forward(x);
 
@@ -316,11 +329,10 @@ fn main() {
     // let binpack_dataset = "/k4/vine_data/vine_43/mixed_data_big.vf";
     // let loader = ViriBinpackLoader::new(binpack_dataset, 8192, 16, ViriFilter::Custom(filter));
 
-    let dataset_paths = 
     // glob::glob("/k4/vine_data/vine_43/mixed_data_big_shuffle/mixed_data_big_split_part2*.vf")
     // glob::glob("/k4/pawnocchio_data2/2026_06_14/**/*.vf")
     // glob::glob("/k4/pawnocchio_data2/2026_06_14/shuf/mix3*")
-    glob::glob("/k4/vine_data/vine_43/mixed_data_bigger_shuffle/*bigger*")
+    let dataset_paths = glob::glob("/k4/vine_data/vine_43/mixed_data_bigger_shuffle/*bigger*")
         .expect("successfully found dataset")
         .map(|f| f.unwrap())
         .collect::<Vec<_>>();
