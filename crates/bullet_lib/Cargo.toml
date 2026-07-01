@@ -118,6 +118,10 @@ name = "pawnocchio_chonker_pp"
 path = "../../examples/pawnocchio_chonker_pp.rs"
 
 [[example]]
+name = "pawnocchio_gpu_chonker_pp"
+path = "../../examples/pawnocchio_gpu_chonker_pp.rs"
+
+[[example]]
 name = "pawnocchio_ti"
 path = "../../examples/pawnocchio_ti.rs"
 
