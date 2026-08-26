@@ -11,7 +11,7 @@ use bullet_compiler::{
         DType, IRTrace, OpType, TType, TensorIR, TensorOp,
         operation::{
             BroadcastAcrossDimension, CABinary, CABinaryOp, Matmul, MatrixLayout, PadAcrossDimension,
-            ReduceAcrossDimension, Reduction, ScalarConstant, SliceAcrossDimension,
+            ReduceAcrossDimension, Reduction, ScalarConstant, SliceAcrossDimension, Unary,
         },
         transform::{
             IRTransform,
@@ -134,7 +134,7 @@ impl<G: Gpu> Function<G> {
                 max_num_args = max_num_args.max(args.len());
                 insts.push(Inst::LaunchKernel { func, args, gdim, bdim, smem });
             } else if let Some(cfg) = data.downcast::<Matmul>().cloned() {
-                if cfg.dtype != DType::F32 {
+                if cfg.dtype != DType::F32 && cfg.dtype != DType::F16 {
                     return Err("Unsupported matmul dtype!".into());
                 }
 
@@ -263,6 +263,7 @@ impl<G: Gpu> Function<G> {
                             k: cfg.lhs.cols.get().try_into().unwrap(),
                             alpha: 1.0,
                             beta: 0.0,
+                            dtype: cfg.dtype,
                         };
 
                         let batch = cfg.batch.get();
@@ -346,8 +347,15 @@ rewriterule! {
             let m = output.lhs.rows;
             let n = output.rhs.cols;
 
-            let lhs = lhs.id();
-            let rhs = rhs.id();
+            let mut lhs = lhs.id();
+            let mut rhs = rhs.id();
+
+            // all the half precision operations output full precision for simplicity
+            if output.dtype == DType::F16 {
+                lhs = ir.add_unary(lhs, Unary::Cast(DType::F32))?;
+                rhs = ir.add_unary(rhs, Unary::Cast(DType::F32))?;
+            }
+
             let lhs = ir.add_broadcast(lhs, [m], 0, n)?;
             let rhs = ir.add_broadcast(rhs, [n, 1.into()], 1, m)?;
             let ty = ir.get_node(lhs)?.ty();

@@ -21,7 +21,7 @@ use transform::{IRTransform, canonicalise, eliminate, modify};
 
 pub use builder::{IRBuilder, TNode};
 pub use operation::{OpType, TensorOp};
-pub use ttype::{DType, DValue, Shape, Size, TType, TValue};
+pub use ttype::{DType, DValue, MatmulPrecision, Shape, Size, TType, TValue};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Tensor;

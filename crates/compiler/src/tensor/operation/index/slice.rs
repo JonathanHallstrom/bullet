@@ -58,6 +58,10 @@ impl SliceAcrossDimension {
         Ok(Self { dtype, outer, dimen, inner, start, end })
     }
 
+    pub fn with_new_dtype(&self, dtype: DType) -> Self {
+        Self { dtype, ..*self }
+    }
+
     pub fn invert(&self) -> Result<PadAcrossDimension, IRError> {
         let shape = [self.outer, (self.end - self.start).into(), self.inner];
         PadAcrossDimension::new(shape, 1, self.start, self.dimen.get() - self.end, DValue::zero(self.dtype))
@@ -120,6 +124,7 @@ impl OpType for SliceAcrossDimension {
                 let TValue::I32(output) = &mut outputs[0] else { panic!() };
                 self.apply(input, output);
             }
+            DType::F16 => unimplemented!(),
         }
 
         true

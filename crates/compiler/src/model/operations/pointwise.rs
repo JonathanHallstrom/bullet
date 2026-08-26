@@ -22,7 +22,10 @@ impl ModelOperation for PointwiseUnary {
     }
 
     fn output(&self) -> MType {
-        self.0
+        match self.0.layout {
+            Layout::Dense(dtype) => MType { layout: Layout::Dense(self.1.dtype(dtype).unwrap()), ..self.0 },
+            _ => self.0,
+        }
     }
 
     fn lower(&self, _batch_size: usize, lower: &mut TensorIR, inputs: Vec<NodeId>) -> Result<NodeId, IRTrace> {

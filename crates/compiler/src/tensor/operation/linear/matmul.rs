@@ -2,7 +2,10 @@ use std::fmt;
 
 use crate::{
     ir::IRError,
-    tensor::{DType, DValue, IRTrace, OpType, Size, TNode, TType, TValue, TensorOp, operation::CABinary},
+    tensor::{
+        DType, DValue, IRTrace, OpType, Size, TNode, TType, TValue, TensorOp,
+        operation::{CABinary, Unary},
+    },
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -56,7 +59,7 @@ impl OpType for Matmul {
 
     fn outputs(&self) -> Vec<TType> {
         let Matmul { dtype, batch, lhs, rhs } = *self;
-        vec![TType::new(batch * lhs.rows * rhs.cols, dtype)]
+        vec![TType::new(batch * lhs.rows * rhs.cols, dtype.grad())]
     }
 
     fn evaluate(&self, inputs: Vec<&TValue>, mut outputs: Vec<&mut TValue>) -> bool {
@@ -103,6 +106,8 @@ impl OpType for Matmul {
         let lhs_node = inputs[0];
         let rhs_node = inputs[1];
         let grad_node = output_grads[0];
+        let grad_node =
+            if dtype == grad_node.ty().dtype() { grad_node } else { grad_node.unary(Unary::Cast(dtype))? };
 
         let builder = grad_node.builder();
 

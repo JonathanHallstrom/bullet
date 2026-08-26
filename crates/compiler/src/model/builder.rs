@@ -7,7 +7,7 @@ use crate::{
     ir::NodeId,
     model::{InitSettings, Layout, MType, ModelIR, ModelOperation, operations::*},
     tensor::{
-        DType, DValue, TValue,
+        DType, DValue, MatmulPrecision, TValue,
         operation::{CABinary, Reduction, Unary},
     },
 };
@@ -115,7 +115,7 @@ impl ModelBuilder {
         let init = InitSettings::Normal { mean: 0.0, stdev: (2.0 / (input_size as f32 * bias_cols as f32)).sqrt() };
         let weights = self.new_weights(format!("{}w", id.as_ref()), (output_size, input_size), init);
         let bias = self.new_weights(format!("{}b", id.as_ref()), (output_size, bias_cols), InitSettings::Zeroed);
-        Affine { weights, bias }
+        Affine { weights, bias, precision: MatmulPrecision::Full }
     }
 
     pub fn with_no_grad<T>(&self, mut f: impl FnMut() -> T) -> T {
@@ -131,6 +131,7 @@ impl ModelBuilder {
 pub struct Affine<'a> {
     pub weights: ModelNode<'a>,
     pub bias: ModelNode<'a>,
+    pub precision: MatmulPrecision,
 }
 
 impl<'a> Affine<'a> {
@@ -139,11 +140,15 @@ impl<'a> Affine<'a> {
     /// affine.slice(start, end).forward(inputs) == affine.forward(inputs).slice_rows(start, end)
     /// ```
     pub fn slice(self, start: usize, end: usize) -> Self {
-        Self { weights: self.weights.slice_rows(start, end), bias: self.bias.slice_rows(start, end) }
+        Self { weights: self.weights.slice_rows(start, end), bias: self.bias.slice_rows(start, end), ..self }
+    }
+
+    pub fn with_precision(self, precision: MatmulPrecision) -> Self {
+        Self { precision, ..self }
     }
 
     pub fn forward(self, input: ModelNode<'a>) -> ModelNode<'a> {
-        self.weights.matmul(input) + self.bias
+        self.weights.matmul_with_precision(input, self.precision) + self.bias
     }
 
     pub fn init_with_effective_input_size(&self, size: usize) {
@@ -267,6 +272,20 @@ impl<'a> ModelNode<'a> {
         }
 
         Self { node: self.builder.add_op([self, rhs], PointwiseBinary(self.ty(), binary)), ..self }
+    }
+
+    pub fn matmul_with_precision(self, other: Self, precision: MatmulPrecision) -> Self {
+        match precision {
+            MatmulPrecision::Full => self.matmul(other),
+            MatmulPrecision::Half => {
+                let other = match other.ty().layout {
+                    Layout::Dense(_) => other.unary(Unary::Cast(DType::F16)),
+                    Layout::Sparse(_) => other,
+                };
+
+                self.unary(Unary::Cast(DType::F16)).matmul(other)
+            }
+        }
     }
 
     pub fn sparse_matmul(self, sparse: Self) -> Self {

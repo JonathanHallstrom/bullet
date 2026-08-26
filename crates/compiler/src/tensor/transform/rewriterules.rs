@@ -6,7 +6,7 @@ use crate::{
         DValue, IRTrace, Tensor, TensorIR,
         operation::{
             BroadcastAcrossDimension, CABinary, CABinaryOp, Matmul, MatrixLayout, PadAcrossDimension, ScalarConstant,
-            SliceAcrossDimension, SparseMatmulBwdMulti, UnaryOp,
+            SliceAcrossDimension, SparseMatmulBwdMulti, Unary, UnaryOp,
         },
         transform::IRTransform,
     },
@@ -92,6 +92,20 @@ rewriterule! {
         let new_parent = ir.add_unary(grandparent.id(), unary.op())?;
         ir.replace_operation(op.id(), [new_parent], new_broadcast)?;
         return Ok(true);
+    }
+}
+
+// make half precision sparse matmull get the same fusions
+rewriterule! {
+    rulename SliceCastIntoCastSlice on ir
+    rewrites op (unary = [UnaryOp] (slice = [SliceAcrossDimension] (grandparent)))
+    {
+        if let Unary::Cast(_) = unary.op() {
+            let new_slice = slice.with_new_dtype(unary.output_type().dtype());
+            let new_parent = ir.add_unary(grandparent.id(), unary.op())?;
+            ir.replace_operation(op.id(), [new_parent], new_slice)?;
+            return Ok(true);
+        }
     }
 }
 

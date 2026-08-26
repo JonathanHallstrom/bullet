@@ -20,6 +20,19 @@ use crate::{
     runtime::{DeviceProps, Dialect, Dim3},
 };
 
+static F16_CONVERSIONS: &str = r#" 
+__device__ float f16_to_f32(short h) { 
+    float f;
+    asm("cvt.f32.f16 %0, %1;" : "=f"(f) : "h"(h));
+    return f;
+} 
+__device__ short f32_to_f16(float f) { 
+    short h;
+    asm("cvt.rn.f16.f32 %0, %1;" : "=h"(h) : "f"(f));
+    return h;
+}
+"#;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pointwise;
 impl TypeSystem for Pointwise {
@@ -348,6 +361,12 @@ impl PointwiseIR {
 
         match props.dialect() {
             Dialect::CudaHip => {
+                if self.ir.nodes().any(|node| match node.ty() {
+                    PType::Pointer(ty) | PType::Variable { ty, .. } => ty == DType::F16,
+                }) {
+                    writeln!(&mut src, "{F16_CONVERSIONS}")?;
+                }
+
                 write!(&mut src, "extern \"C\" __global__ void {kernel_name}(")?;
 
                 for (i, &input) in self.bufs.iter().enumerate() {

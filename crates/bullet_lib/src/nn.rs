@@ -1,4 +1,5 @@
 pub use bullet_compiler::model::{Affine, InitSettings, ModelBuilder, ModelNode, Shape};
+pub use bullet_compiler::tensor::MatmulPrecision;
 
 #[cfg(all(feature = "metal", any(feature = "cuda", feature = "rocm")))]
 compile_error!("The 'metal' feature cannot be enabled at the same time as 'cuda' or 'rocm'. Choose one GPU backend.");

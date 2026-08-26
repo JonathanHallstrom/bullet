@@ -29,8 +29,8 @@ impl Unary {
     pub fn dtype(self, input: DType) -> Option<DType> {
         match self {
             Self::Cast(ty) => Some(ty),
-            Self::Sgn | Self::Abs => Some(input),
-            _ => (input != DType::I32).then_some(input),
+            Self::Sgn | Self::Abs => (input != DType::F16).then_some(input),
+            _ => (input != DType::I32 && input != DType::F16).then_some(input),
         }
     }
 
@@ -163,7 +163,7 @@ impl OpType for UnaryOp {
         }?;
 
         if let Unary::Cast(_) = self.op() {
-            grad.unary(Unary::Cast(self.input_type().dtype()))
+            grad.unary(Unary::Cast(self.input_type().dtype().grad()))
         } else {
             grad * g
         }

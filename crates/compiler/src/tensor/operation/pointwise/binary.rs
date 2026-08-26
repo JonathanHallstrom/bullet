@@ -50,6 +50,8 @@ pub struct CABinaryOp {
 
 impl CABinaryOp {
     pub fn new(ty: TType, op: CABinary) -> Self {
+        assert!(ty.dtype() != DType::F16, "fml");
+
         Self { ty, op }
     }
 

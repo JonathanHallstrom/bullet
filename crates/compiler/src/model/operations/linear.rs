@@ -122,7 +122,7 @@ impl ModelOperation for Matmul {
 
     fn output(&self) -> MType {
         let Matmul { lbatch, rbatch, dtype, m, k, .. } = *self;
-        MType { batch: lbatch | rbatch, rows: m, cols: k, layout: Layout::Dense(dtype) }
+        MType { batch: lbatch | rbatch, rows: m, cols: k, layout: Layout::Dense(dtype.grad()) }
     }
 
     fn lower(&self, batch_size: usize, lower: &mut TensorIR, inputs: Vec<NodeId>) -> Result<NodeId, IRTrace> {
@@ -174,7 +174,7 @@ impl ModelOperation for SparseMatmul {
 
     fn output(&self) -> MType {
         let SparseMatmul { batch, rows, dtype, .. } = *self;
-        MType { batch, rows, cols: 1, layout: Layout::Dense(dtype) }
+        MType { batch, rows, cols: 1, layout: Layout::Dense(dtype.grad()) }
     }
 
     fn lower(&self, batch_size: usize, lower: &mut TensorIR, inputs: Vec<NodeId>) -> Result<NodeId, IRTrace> {

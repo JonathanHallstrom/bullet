@@ -2,6 +2,8 @@
 
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 
+use bullet_compiler::tensor::DType;
+
 use crate::runtime::{
     Dialect,
     bindings::{DeviceProps, Dim3, GemmConfig, GpuBindings},
@@ -265,21 +267,28 @@ impl GpuBindings for Cuda {
         b: CUdeviceptr,
         c: CUdeviceptr,
     ) -> CudaResult {
-        error::blas(cublasSgemm_v2(
+        let ty = if config.dtype == DType::F16 { cudaDataType::CUDA_R_16F } else { cudaDataType::CUDA_R_32F };
+
+        error::blas(cublasGemmEx(
             handle,
             config.row_mjr_a.into(),
             config.row_mjr_b.into(),
             config.m,
             config.n,
             config.k,
-            &config.alpha,
-            a as *const f32,
+            (&config.alpha as *const f32).cast(),
+            a as *const c_void,
+            ty,
             if config.row_mjr_a { config.k } else { config.m },
-            b as *const f32,
+            b as *const c_void,
+            ty,
             if config.row_mjr_b { config.n } else { config.k },
-            &config.beta,
-            c as *mut f32,
+            (&config.beta as *const f32).cast(),
+            c as *mut c_void,
+            cudaDataType::CUDA_R_32F,
             config.m,
+            cublasComputeType::CUBLAS_COMPUTE_32F,
+            cublasGemmAlgo::CUBLAS_GEMM_DEFAULT,
         ))
     }
 
@@ -291,25 +300,32 @@ impl GpuBindings for Cuda {
         b: CUdeviceptr,
         c: CUdeviceptr,
     ) -> CudaResult {
-        error::blas(cublasSgemmStridedBatched(
+        let ty = if config.dtype == DType::F16 { cudaDataType::CUDA_R_16F } else { cudaDataType::CUDA_R_32F };
+
+        error::blas(cublasGemmStridedBatchedEx(
             handle,
             config.row_mjr_a.into(),
             config.row_mjr_b.into(),
             config.m,
             config.n,
             config.k,
-            &config.alpha,
-            a as *const f32,
+            (&config.alpha as *const f32).cast(),
+            a as *const c_void,
+            ty,
             if config.row_mjr_a { config.k } else { config.m },
             (config.m * config.k).into(),
-            b as *const f32,
+            b as *const c_void,
+            ty,
             if config.row_mjr_b { config.n } else { config.k },
             (config.k * config.n).into(),
-            &config.beta,
-            c as *mut f32,
+            (&config.beta as *const f32).cast(),
+            c as *mut c_void,
+            cudaDataType::CUDA_R_32F,
             config.m,
             (config.m * config.n).into(),
             batch_size,
+            cublasComputeType::CUBLAS_COMPUTE_32F,
+            cublasGemmAlgo::CUBLAS_GEMM_DEFAULT,
         ))
     }
 }
@@ -477,47 +493,76 @@ mod raw {
         }
     }
 
+    #[repr(i32)]
+    #[derive(Clone, Copy, Debug)]
+    pub enum cudaDataType {
+        CUDA_R_16F = 2,
+        CUDA_R_32F = 0,
+    }
+
+    #[repr(i32)]
+    #[derive(Clone, Copy, Debug)]
+    pub enum cublasComputeType {
+        CUBLAS_COMPUTE_32F = 68,
+    }
+
+    #[repr(i32)]
+    #[derive(Clone, Copy, Debug)]
+    pub enum cublasGemmAlgo {
+        CUBLAS_GEMM_DEFAULT = -1,
+    }
+
     unsafe extern "C" {
         pub fn cublasGetStatusName(status: cublasStatus) -> *const c_char;
         pub fn cublasGetStatusString(status: cublasStatus) -> *const c_char;
         pub fn cublasCreate_v2(handle: *mut cublasHandle) -> cublasStatus;
         pub fn cublasDestroy_v2(handle: cublasHandle) -> cublasStatus;
         pub fn cublasSetStream_v2(handle: cublasHandle, streamId: CUstream) -> cublasStatus;
-        pub fn cublasSgemm_v2(
+        pub fn cublasGemmEx(
             handle: cublasHandle,
             transa: cublasOperation,
             transb: cublasOperation,
             m: c_int,
             n: c_int,
             k: c_int,
-            alpha: *const f32,
-            A: *const f32,
+            alpha: *const c_void,
+            A: *const c_void,
+            Atype: cudaDataType,
             lda: c_int,
-            B: *const f32,
+            B: *const c_void,
+            Btype: cudaDataType,
             ldb: c_int,
-            beta: *const f32,
-            C: *mut f32,
+            beta: *const c_void,
+            C: *mut c_void,
+            Ctype: cudaDataType,
             ldc: c_int,
+            computeType: cublasComputeType,
+            algo: cublasGemmAlgo,
         ) -> cublasStatus;
-        pub fn cublasSgemmStridedBatched(
+        pub fn cublasGemmStridedBatchedEx(
             handle: cublasHandle,
             transa: cublasOperation,
             transb: cublasOperation,
             m: c_int,
             n: c_int,
             k: c_int,
-            alpha: *const f32,
-            A: *const f32,
+            alpha: *const c_void,
+            A: *const c_void,
+            Atype: cudaDataType,
             lda: c_int,
             strideA: c_longlong,
-            B: *const f32,
+            B: *const c_void,
+            Btype: cudaDataType,
             ldb: c_int,
             strideB: c_longlong,
-            beta: *const f32,
-            C: *mut f32,
+            beta: *const c_void,
+            C: *mut c_void,
+            Ctype: cudaDataType,
             ldc: c_int,
             strideC: c_longlong,
             batchCount: c_int,
+            computeType: cublasComputeType,
+            algo: cublasGemmAlgo,
         ) -> cublasStatus;
     }
 

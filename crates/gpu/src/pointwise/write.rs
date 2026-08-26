@@ -12,6 +12,7 @@ pub fn tystr(dtype: DType) -> &'static str {
     match dtype {
         DType::F32 => "float",
         DType::I32 => "int",
+        DType::F16 => "short",
     }
 }
 
@@ -166,6 +167,8 @@ pub fn code_str(op: PointwiseOp, size: Size, props: &DeviceProps) -> Option<Stri
             }
         }
         PointwiseOp::Unary { ty, p2size, op } => {
+            let oty = tystr(if let Unary::Cast(nty) = op { nty } else { ty }); // 
+            let dtype = ty;
             let ty = tystr(ty);
 
             let opstr = |x: &str| match op {
@@ -179,9 +182,16 @@ pub fn code_str(op: PointwiseOp, size: Size, props: &DeviceProps) -> Option<Stri
                 _ => {
                     let mslidx = usize::from(dialect == Dialect::Msl);
                     let opstr: &str = match op {
-                        Unary::Cast(nty) => match nty {
-                            DType::F32 => "static_cast<float>",
-                            DType::I32 => "static_cast<int>",
+                        Unary::Cast(nty) => match (dtype, nty) {
+                            (DType::F16, DType::F32) => "f16_to_f32",
+                            (DType::F32, DType::F16) => "f32_to_f16",
+
+                            // no fucky conversions
+                            (DType::F16, _) => unimplemented!(),
+                            (_, DType::F16) => unimplemented!(),
+
+                            (_, DType::F32) => "static_cast<float>",
+                            (_, DType::I32) => "static_cast<int>",
                         },
                         Unary::Abs => "abs",
                         Unary::Sin => ["sinf", "sin"][mslidx],
@@ -205,10 +215,10 @@ pub fn code_str(op: PointwiseOp, size: Size, props: &DeviceProps) -> Option<Stri
             };
 
             match p2size {
-                0 => Some(format!("const {ty} OUT1 = {};", opstr("IN1"))),
-                1 => Some(format!("{ty}2 OUT1;\nOUT1.x = {};\nOUT1.y = {};", opstr("IN1.x"), opstr("IN1.y"),)),
+                0 => Some(format!("const {oty} OUT1 = {};", opstr("IN1"))),
+                1 => Some(format!("{oty}2 OUT1;\nOUT1.x = {};\nOUT1.y = {};", opstr("IN1.x"), opstr("IN1.y"),)),
                 2 => Some(format!(
-                    "{ty}4 OUT1;\nOUT1.x = {};\nOUT1.y = {};\nOUT1.z = {};\nOUT1.w = {};",
+                    "{oty}4 OUT1;\nOUT1.x = {};\nOUT1.y = {};\nOUT1.z = {};\nOUT1.w = {};",
                     opstr("IN1.x"),
                     opstr("IN1.y"),
                     opstr("IN1.z"),
@@ -218,19 +228,22 @@ pub fn code_str(op: PointwiseOp, size: Size, props: &DeviceProps) -> Option<Stri
             }
         }
         PointwiseOp::SpMM { nnz, rows, cols, stride, offset, ty, p2size } => {
+            let acc = tystr(ty.grad());
+            let val = |x: &str| if ty == DType::F16 { format!("f16_to_f32({x})") } else { x.to_string() };
             let ty = tystr(ty);
             match p2size {
                 0 => Some(format!(
                     "\
-                    {ty} OUT1 = 0;
+                    {acc} OUT1 = 0;
                     int UNIQ1 = IN3 / {rows};
                     int UNIQ2 = {offset} + IN3 % {rows};
 
                     for (int i = 0; i < {nnz}; i++) {{
                         const int j = IN2[{nnz} * UNIQ1 + i];
                         if (j < 0 || j >= {cols}) break;
-                        OUT1 += IN1[j * {stride} + UNIQ2];
-                    }}"
+                        OUT1 += {};
+                    }}",
+                    val(&format!("IN1[j * {stride} + UNIQ2]"))
                 )),
                 1 => {
                     assert_eq!(rows % 2, 0);
@@ -240,10 +253,10 @@ pub fn code_str(op: PointwiseOp, size: Size, props: &DeviceProps) -> Option<Stri
                     let o = offset / 2;
                     let s = stride / 2;
                     let cast = dialect.reinterpret_cast(&format!("{ty}2"));
-                    let zero_vec = dialect.make_vec(ty, 2, "0, 0");
+                    let zero_vec = dialect.make_vec(acc, 2, "0, 0");
                     Some(format!(
                         "\
-                        {ty}2 OUT1 = {zero_vec};
+                        {acc}2 OUT1 = {zero_vec};
                         int UNIQ1 = IN3 / {m};
                         int UNIQ2 = {o} + IN3 % {m};
 
@@ -254,9 +267,11 @@ pub fn code_str(op: PointwiseOp, size: Size, props: &DeviceProps) -> Option<Stri
 
                             const {ty}2 a = {cast}(IN1)[j * {s} + UNIQ2];
 
-                            OUT1.x += a.x;
-                            OUT1.y += a.y;
-                        }}"
+                            OUT1.x += {};
+                            OUT1.y += {};
+                        }}",
+                        val("a.x"),
+                        val("a.y")
                     ))
                 }
                 2 => {
@@ -267,10 +282,10 @@ pub fn code_str(op: PointwiseOp, size: Size, props: &DeviceProps) -> Option<Stri
                     let o = offset / 4;
                     let s = stride / 4;
                     let cast = dialect.reinterpret_cast(&format!("{ty}4"));
-                    let zero_vec = dialect.make_vec(ty, 4, "0, 0, 0, 0");
+                    let zero_vec = dialect.make_vec(acc, 4, "0, 0, 0, 0");
                     Some(format!(
                         "\
-                        {ty}4 OUT1 = {zero_vec};
+                        {acc}4 OUT1 = {zero_vec};
                         int UNIQ1 = IN3 / {m};
                         int UNIQ2 = {o} + IN3 % {m};
 
@@ -281,11 +296,15 @@ pub fn code_str(op: PointwiseOp, size: Size, props: &DeviceProps) -> Option<Stri
 
                             const {ty}4 a = {cast}(IN1)[j * {s} + UNIQ2];
 
-                            OUT1.x += a.x;
-                            OUT1.y += a.y;
-                            OUT1.z += a.z;
-                            OUT1.w += a.w;
-                        }}"
+                            OUT1.x += {};
+                            OUT1.y += {};
+                            OUT1.z += {};
+                            OUT1.w += {};
+                        }}",
+                        val("a.x"),
+                        val("a.y"),
+                        val("a.z"),
+                        val("a.w")
                     ))
                 }
                 3.. => None,

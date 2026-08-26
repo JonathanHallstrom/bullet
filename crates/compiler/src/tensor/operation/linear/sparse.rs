@@ -35,7 +35,7 @@ impl SparseMatmul {
     }
 
     pub fn invert(&self) -> SparseMatmulBwd {
-        SparseMatmulBwd(*self)
+        SparseMatmulBwd(SparseMatmul { dtype: self.dtype.grad(), ..*self })
     }
 
     pub fn dtype(&self) -> DType {
@@ -80,7 +80,7 @@ impl OpType for SparseMatmul {
 
     fn outputs(&self) -> Vec<TType> {
         let SparseMatmul { dtype, batch, rows, .. } = *self;
-        vec![TType::new(batch * rows, dtype)]
+        vec![TType::new(batch * rows, dtype.grad())]
     }
 
     fn evaluate(&self, inputs: Vec<&TValue>, mut outputs: Vec<&mut TValue>) -> bool {

@@ -137,7 +137,7 @@ impl Operation<PType> for PointwiseOp {
             Self::ThreadId => vec![PType::Variable { ty: DType::I32, p2size: 0 }],
             Self::Div | Self::Rem => vec![PType::Variable { ty: DType::I32, p2size: 0 }],
             Self::Broadcast(ty, p2size) => vec![PType::Variable { ty, p2size: p2size.get() }],
-            Self::SpMM { ty, p2size, .. } => vec![PType::Variable { ty, p2size }],
+            Self::SpMM { ty, p2size, .. } => vec![PType::Variable { ty: ty.grad(), p2size }],
         }
     }
 }

@@ -230,6 +230,13 @@ impl Shape {
 pub enum DType {
     F32,
     I32,
+    F16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MatmulPrecision {
+    Full,
+    Half,
 }
 
 impl fmt::Debug for DType {
@@ -237,6 +244,7 @@ impl fmt::Debug for DType {
         match *self {
             Self::F32 => write!(f, "f32"),
             Self::I32 => write!(f, "i32"),
+            Self::F16 => write!(f, "f16"),
         }
     }
 }
@@ -246,6 +254,14 @@ impl DType {
         match self {
             Self::F32 => 4,
             Self::I32 => 4,
+            Self::F16 => 2,
+        }
+    }
+
+    pub fn grad(self) -> DType {
+        match self {
+            Self::F16 => Self::F32,
+            d => d,
         }
     }
 }
@@ -274,6 +290,7 @@ impl DValue {
         match dtype {
             DType::F32 => 0.0.into(),
             DType::I32 => 0.into(),
+            DType::F16 => unimplemented!(),
         }
     }
 
@@ -281,6 +298,7 @@ impl DValue {
         match dtype {
             DType::F32 => 1.0.into(),
             DType::I32 => 1.into(),
+            DType::F16 => unimplemented!(),
         }
     }
 
@@ -288,6 +306,7 @@ impl DValue {
         match dtype {
             DType::F32 => (-1.0).into(),
             DType::I32 => (-1).into(),
+            DType::F16 => unimplemented!(),
         }
     }
 
@@ -358,6 +377,7 @@ impl TValue {
         match dtype {
             DType::F32 => Self::F32(vec![0.0; size]),
             DType::I32 => Self::I32(vec![0; size]),
+            DType::F16 => unimplemented!(),
         }
     }
 

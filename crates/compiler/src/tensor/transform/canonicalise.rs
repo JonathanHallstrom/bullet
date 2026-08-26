@@ -3,7 +3,7 @@ use std::rc::Rc;
 use crate::{
     ir::{NodeId, OpId},
     tensor::{
-        IRTrace, TValue, TensorIR, TensorOp,
+        DType, IRTrace, TValue, TensorIR, TensorOp,
         operation::{Constant, CopyOp, ScalarConstant},
         transform::{IRTransform, eliminate::*, foldrules::*, ordering::*, rewriterules::*},
     },
@@ -36,6 +36,7 @@ impl CanonicalisePass {
             .add_fold(FoldAbsSquared)
             .add_fold(FoldSlicedSparseMatmul)
             .add_rewrite(BroadcastUnaryIntoUnaryBroadcast)
+            .add_rewrite(SliceCastIntoCastSlice)
             .add_rewrite(BroadcastBinaryIntoBinaryBroadcast)
             .add_rewrite(ScalarBroadcastBinaryIntoBinaryBroadcast)
             .add_rewrite(CombineXAddMulX)
@@ -128,6 +129,11 @@ impl CanonicalisePass {
 
             let mut tensors = Vec::new();
             for &ty in &op.0.outputs() {
+                // no host f16
+                if ty.dtype() == DType::F16 {
+                    return Ok(None);
+                }
+
                 tensors.push(TValue::zeros(ty.dtype(), ty.size().get()));
             }
 
