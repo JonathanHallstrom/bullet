@@ -24,7 +24,7 @@ impl Dialect {
 
     pub fn atomic_add(&self, ptr_expr: &str, val_expr: &str) -> String {
         match self {
-            Dialect::CudaHip => format!("atomicAdd({ptr_expr}, {val_expr});"),
+            Dialect::CudaHip => format!("unsafeAtomicAdd({ptr_expr}, {val_expr});"),
             Dialect::Msl => format!(
                 "atomic_fetch_add_explicit((volatile device atomic_float*)({ptr_expr}), {val_expr}, memory_order_relaxed);"
             ),
