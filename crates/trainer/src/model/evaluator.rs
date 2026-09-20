@@ -20,7 +20,15 @@ pub struct ModelEvaluator<G: Gpu> {
 
 impl<G: Gpu> ModelEvaluator<G> {
     pub fn new(defn: &ModelDefinition, device: Arc<Device<G>>) -> Result<Self, G::Error> {
-        let forward = defn.lower_forward(1).map_err(|e| format!("{e}"))?;
+        Self::with_batch_size(defn, device, 1)
+    }
+
+    pub fn with_batch_size(
+        defn: &ModelDefinition,
+        device: Arc<Device<G>>,
+        batch_size: usize,
+    ) -> Result<Self, G::Error> {
+        let forward = defn.lower_forward(batch_size).map_err(|e| format!("{e}"))?;
 
         let mut bufs = BTreeMap::new();
 

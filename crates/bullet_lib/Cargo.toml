@@ -59,4 +59,8 @@ path = "../../examples/progression/4_multi_layer.rs"
 
 [[example]]
 name = "advanced"
-path = "../../examples/advanced/main.rs"
+path = "../../examples/advanced/train.rs"
+
+[[example]]
+name = "relabel"
+path = "../../examples/advanced/relabel.rs"
