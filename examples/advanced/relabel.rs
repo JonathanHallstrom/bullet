@@ -45,7 +45,7 @@ fn relabel(
     let mut position_count = 0;
 
     loop {
-        let mut got_any_games = true;
+        let mut got_any_games = false;
         for _ in 0..GAMES_PER_ITER {
             // break if we hit the end of the file
             if reader.fill_buf()?.is_empty() {
@@ -61,15 +61,15 @@ fn relabel(
             )
             .map_err(io::Error::other)?;
             games.push(game);
-            got_any_games = false;
+            got_any_games = true;
         }
         let padding;
         if got_any_games {
+            padding = 0;
+        } else {
             let positions = boards.len();
             padding = positions.next_multiple_of(BATCH_SIZE) - positions;
             boards.resize(positions + padding, Default::default());
-        } else {
-            padding = 0;
         }
 
         let evaluated = boards.len() / BATCH_SIZE * BATCH_SIZE;
@@ -108,7 +108,7 @@ fn relabel(
         game_count += ready_games;
         position_count += ready_scores;
 
-        if got_any_games {
+        if !got_any_games {
             assert!(games.is_empty() && scores.is_empty());
             return Ok((game_count, position_count));
         }
