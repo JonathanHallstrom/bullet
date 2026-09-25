@@ -35,6 +35,7 @@ pub struct DeviceProps {
     pub(super) vec_atomics: bool,
     pub(super) arch: Option<String>,
     pub(super) dialect: Dialect,
+    pub(super) atomic_flag: bool,
 }
 
 impl DeviceProps {
@@ -60,6 +61,10 @@ impl DeviceProps {
 
     pub fn dialect(&self) -> Dialect {
         self.dialect
+    }
+
+    pub fn atomic_flag(&self) -> bool {
+        self.atomic_flag
     }
 }
 
