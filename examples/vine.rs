@@ -193,7 +193,19 @@ fn main() {
         .save_format(&[
             SavedFormat::id("l0w").round().quantise::<i16>(QA),
             SavedFormat::id("l0b").round().quantise::<i16>(QA),
-            SavedFormat::id("l1w").round().quantise::<i8>(QB),
+            SavedFormat::id("l1w")
+                .transform(|_, weights| {
+                    let mut packed = vec![0.0; weights.len()];
+                    for i in 0..L1 / 2 {
+                        let src = i / 64 * 64 + i % 64 / 16 * 8 + i % 16 / 8 * 32 + i % 8;
+                        for k in 0..L2 {
+                            packed[(i / 4 * L2 + k) * 4 + i % 4] = weights[src * L2 + k];
+                        }
+                    }
+                    packed
+                })
+                .round()
+                .quantise::<i8>(QB),
             SavedFormat::id("l1b"),
             SavedFormat::id("l2w"),
             SavedFormat::id("l2b"),
