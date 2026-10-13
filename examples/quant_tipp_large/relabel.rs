@@ -2,10 +2,12 @@ mod inputs;
 mod net;
 
 use std::{
+    collections::VecDeque,
     env,
     fs::{File, OpenOptions},
     io::{self, BufRead, BufReader, BufWriter, Write},
-    path::Path,
+    sync::mpsc::{self, Receiver, Sender, SyncSender},
+    thread,
     time::Instant,
 };
 
@@ -17,7 +19,7 @@ use bullet_trainer::{
 use viriformat::{chess::piece::Colour, dataformat::Game};
 
 const BATCH_SIZE: usize = 16384;
-const GAMES_PER_ITER: usize = 16;
+const QUEUE_DEPTH: usize = 2;
 const MAP_THREADS: u8 = 8;
 const SCALE: f32 = 400.0;
 const EVAL_CLAMP: i32 = 32767;
@@ -32,59 +34,74 @@ fn stored_eval(output: f32, black_to_move: bool) -> i16 {
     score.clamp(-EVAL_CLAMP, EVAL_CLAMP) as i16
 }
 
-fn relabel(
-    reader: &mut impl BufRead,
-    writer: &mut impl Write,
-    mut evaluate: impl FnMut(&[ChessBoard], &mut Vec<f32>) -> io::Result<()>,
-) -> io::Result<(usize, usize)> {
-    let mut games = Vec::new();
+fn read_games(
+    mut reader: impl BufRead,
+    games: Sender<Game>,
+    batches: SyncSender<(Vec<ChessBoard>, usize)>,
+) -> io::Result<()> {
     let mut boards = Vec::new();
+
+    loop {
+        // break if we hit the end of the file
+        if reader.fill_buf()?.is_empty() {
+            break;
+        }
+        let game = Game::deserialise_from(&mut reader, Vec::new())?;
+        game.splat_to_bulletformat_with_filter_callback(
+            |board| {
+                boards.push(board);
+                Ok(())
+            },
+            |_, _, _, _, _| false,
+        )
+        .map_err(io::Error::other)?;
+        if games.send(game).is_err() {
+            return Ok(());
+        }
+        while boards.len() >= BATCH_SIZE {
+            if batches.send((boards.drain(..BATCH_SIZE).collect(), 0)).is_err() {
+                return Ok(());
+            }
+        }
+    }
+
+    if !boards.is_empty() {
+        let padding = BATCH_SIZE - boards.len();
+        boards.resize(BATCH_SIZE, Default::default());
+        let _ = batches.send((boards, padding));
+    }
+
+    Ok(())
+}
+
+fn relabel<B>(
+    batches: Receiver<(B, usize)>,
+    games: Receiver<Game>,
+    writer: &mut impl Write,
+    mut evaluate: impl FnMut(B, &mut Vec<f32>) -> io::Result<()>,
+) -> io::Result<(usize, usize)> {
+    let mut pending = VecDeque::new();
     let mut scores = Vec::new();
-    let mut move_buffers = Vec::new();
     let mut output_moves = Vec::new();
     let mut game_count = 0;
     let mut position_count = 0;
 
     loop {
-        let mut got_any_games = false;
-        for _ in 0..GAMES_PER_ITER {
-            // break if we hit the end of the file
-            if reader.fill_buf()?.is_empty() {
-                break;
-            }
-            let game = Game::deserialise_from(reader, move_buffers.pop().unwrap_or_default())?;
-            game.splat_to_bulletformat_with_filter_callback(
-                |board| {
-                    boards.push(board);
-                    Ok(())
-                },
-                |_, _, _, _, _| false,
-            )
-            .map_err(io::Error::other)?;
-            games.push(game);
-            got_any_games = true;
-        }
-        let padding;
-        if got_any_games {
-            padding = 0;
-        } else {
-            let positions = boards.len();
-            padding = positions.next_multiple_of(BATCH_SIZE) - positions;
-            boards.resize(positions + padding, Default::default());
-        }
-
-        let evaluated = boards.len() / BATCH_SIZE * BATCH_SIZE;
-        for batch in boards[..evaluated].chunks(BATCH_SIZE) {
+        let batch = batches.recv().ok();
+        let finished = batch.is_none();
+        if let Some((batch, padding)) = batch {
             let expected = scores.len() + BATCH_SIZE;
             evaluate(batch, &mut scores)?;
             assert_eq!(scores.len(), expected);
+            scores.truncate(scores.len() - padding);
+            pending.extend(games.try_iter());
+        } else {
+            pending.extend(games.iter());
         }
-        scores.truncate(scores.len() - padding);
-        boards.drain(..evaluated);
 
         let mut ready_games = 0;
         let mut ready_scores = 0;
-        for game in &games {
+        for game in &pending {
             if ready_scores + game.len() > scores.len() {
                 break;
             }
@@ -93,7 +110,7 @@ fn relabel(
         }
         {
             let mut ready = scores.drain(..ready_scores);
-            for game in games.drain(..ready_games) {
+            for game in pending.drain(..ready_games) {
                 let mut black_to_move = game.initial_position().turn() == Colour::Black;
                 output_moves.clear();
                 let mut relabelled = Game { initial_position: game.initial_position, moves: output_moves };
@@ -103,14 +120,15 @@ fn relabel(
                 }
                 relabelled.serialise_into(writer)?;
                 output_moves = relabelled.into_move_buffer();
-                move_buffers.push(game.into_move_buffer());
             }
         }
         game_count += ready_games;
         position_count += ready_scores;
 
-        if !got_any_games {
-            assert!(games.is_empty() && scores.is_empty());
+        if finished {
+            if !pending.is_empty() || !scores.is_empty() {
+                return Err(io::Error::other("positions left unscored at end of input"));
+            }
             return Ok((game_count, position_count));
         }
     }
@@ -132,19 +150,38 @@ fn main() -> io::Result<()> {
     let mapper = inputs::make_inputs_mapper(&model_inputs, pp, psqt, wdl::ConstantWDL { value: 0.0 });
     let pool = HostPool::new(device.clone());
 
-    let mut reader = BufReader::new(File::open(input)?);
+    let reader = BufReader::new(File::open(input)?);
     let output = OpenOptions::new().write(true).create_new(true).open(output)?;
     let mut writer = BufWriter::new(output);
+
+    let (game_tx, game_rx) = mpsc::channel();
+    let (board_tx, board_rx) = mpsc::sync_channel(QUEUE_DEPTH);
+    let (batch_tx, batch_rx) = mpsc::sync_channel(QUEUE_DEPTH);
+
     let start = Instant::now();
-    let (game_count, position_count) = relabel(&mut reader, &mut writer, |batch, scores| {
-        let inputs = mapper
-            .map(&pool, batch, Step::default(), MAP_THREADS)
-            .and_then(|b| b.to_device(&device))
-            .map_err(gpu_error)?;
-        let outputs = evaluator.evaluate(&inputs).map_err(gpu_error)?;
-        let output = outputs["output"].to_host().map_err(gpu_error)?;
-        scores.extend_from_slice(output.f32());
-        Ok(())
+    let (game_count, position_count) = thread::scope(|s| {
+        let reading = s.spawn(move || read_games(reader, game_tx, board_tx));
+        let mapping = s.spawn(move || -> io::Result<()> {
+            for (boards, padding) in board_rx {
+                let batch = mapper.map(&pool, &boards, Step::default(), MAP_THREADS).map_err(gpu_error)?;
+                if batch_tx.send((batch, padding)).is_err() {
+                    break;
+                }
+            }
+            Ok(())
+        });
+
+        let result = relabel(batch_rx, game_rx, &mut writer, |batch, scores| {
+            let inputs = batch.to_device(&device).map_err(gpu_error)?;
+            let outputs = evaluator.evaluate(&inputs).map_err(gpu_error)?;
+            let output = outputs["output"].to_host().map_err(gpu_error)?;
+            scores.extend_from_slice(output.f32());
+            Ok(())
+        });
+
+        reading.join().unwrap()?;
+        mapping.join().unwrap()?;
+        result
     })?;
 
     writer.flush()?;
