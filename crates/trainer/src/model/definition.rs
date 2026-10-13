@@ -4,7 +4,7 @@ use bullet_compiler::{
     ir::NodeId,
     model::{Layout, MType, ModelBuilder, ModelIR, ModelNode},
     tensor::{
-        DType, IRTrace, TValue, TensorIR,
+        DType, DValue, IRTrace, TValue, TensorIR,
         transform::{
             autograd::{LowerForward, TakeGradient},
             canonicalise::CanonicalisePass,
@@ -34,6 +34,8 @@ pub struct ModelDefinition {
     ir: ModelIR,
     loss: Option<NodeId>,
     outputs: Vec<(NodeId, String)>,
+    /// Enable validation of compiler passes in `TensorIR` compiled from this definition
+    pub debug: bool,
 }
 
 impl ModelDefinition {
@@ -56,7 +58,7 @@ impl ModelDefinition {
             assert_eq!(ir.node(loss).ty(), MType::new(false, 1, 1, Layout::Dense(DType::F32)));
         }
 
-        Self { ir, loss, outputs: outputs.into() }
+        Self { ir, loss, outputs: outputs.into(), debug: false }
     }
 
     pub fn ir(&self) -> &ModelIR {
@@ -73,6 +75,7 @@ impl ModelDefinition {
 
     pub fn lower_forward(&self, batch_size: usize) -> Result<ModelFunctionDefinition, IRTrace> {
         let (mut fwd, map) = self.ir.lower(batch_size)?;
+        fwd.debug = self.debug;
 
         for (output, _) in &self.outputs {
             fwd.register_output(*map.get(output).unwrap());
@@ -91,6 +94,7 @@ impl ModelDefinition {
         batch_size: usize,
     ) -> Result<(ModelFunctionDefinition, BTreeMap<NodeId, NodeId>), IRTrace> {
         let (mut bwd, map) = self.ir.lower(batch_size)?;
+        bwd.debug = self.debug;
 
         let loss = self.loss.ok_or("Loss node not defined!")?;
         let loss = *map.get(&loss).unwrap();
@@ -108,7 +112,17 @@ impl ModelDefinition {
         for &id in self.ir.weights().keys() {
             if !frozen.contains(&id) {
                 let wid = *map.get(&id).unwrap();
-                let gid = *grads.borrow().get(&wid).unwrap();
+
+                // weights with no path to the loss have zero gradient
+                let gid = match grads.borrow().get(&wid).copied() {
+                    Some(gid) => gid,
+                    None => {
+                        let ty = self.ir.node(id).ty();
+                        let Layout::Dense(dtype) = ty.layout() else { unreachable!() };
+                        bwd.add_scalar(DValue::zero(dtype), ty.shape().size())
+                    }
+                };
+
                 bwd.register_output(gid);
                 gmap.insert(id, gid);
             }
