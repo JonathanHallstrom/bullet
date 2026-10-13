@@ -107,6 +107,10 @@ name = "quant_ti"
 path = "../../examples/quant_ti.rs"
 
 [[example]]
+name = "quant_tipp_large"
+path = "../../examples/quant_tipp_large.rs"
+
+[[example]]
 name = "pawnocchio_multilayer"
 path = "../../examples/pawnocchio_multilayer.rs"
 
