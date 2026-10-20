@@ -64,7 +64,7 @@ impl SliceAcrossDimension {
 
     pub fn invert(&self) -> Result<PadAcrossDimension, IRError> {
         let shape = [self.outer, (self.end - self.start).into(), self.inner];
-        PadAcrossDimension::new(shape, 1, self.start, self.dimen.get() - self.end, DValue::zero(self.dtype))
+        PadAcrossDimension::new(shape, 1, self.start, self.dimen.get() - self.end, DValue::zero(self.dtype.grad()))
     }
 
     pub fn input_size(&self) -> Size {
